@@ -10,9 +10,11 @@ async def fetch_ddgs(query):
         results = []
         try:
             with DDGS() as ddgs:
+                # Add explicit timeout for Free Tier optimization (e.g. 4 seconds)
                 ddgs_results = ddgs.text(
                     query,
-                    max_results=5
+                    max_results=5,
+                    timeout=4
                 )
 
                 for r in ddgs_results or []:
@@ -46,7 +48,12 @@ async def fetch_google(query):
 
         return results
 
-    return await asyncio.to_thread(sync_google)
+    try:
+        # Google search can be slow, wrap it in wait_for to enforce the 4s budget
+        return await asyncio.wait_for(asyncio.to_thread(sync_google), timeout=4.0)
+    except asyncio.TimeoutError:
+        print("Google search timed out (exceeded 4s)")
+        return []
 
 
 async def search_ieee(query):
