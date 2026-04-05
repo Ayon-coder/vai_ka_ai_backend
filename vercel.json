@@ -1,11 +1,19 @@
 {
   "functions": {
     "app.py": {
-      "runtime": "@vercel/python",
-      "maxDuration": 60
+      "runtime": "@vercel/python@4.1.0",
+      "maxDuration": 60,
+      "memory": 1024
     }
   },
   "rewrites": [
-    { "source": "/(.*)", "destination": "app.py" }
+    { "source": "/(.*)", "destination": "/app.py" }
+  ],
+  "env": [
+    "GROQ_API_KEY",
+    "CATEGORICAL_MODEL_API_KEY",
+    "GROQ_MODEL_NAME",
+    "CATEGORICAL_MODEL",
+    "FRONTEND_URL"
   ]
 }
