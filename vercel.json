@@ -8,22 +8,5 @@
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/app.py" }
-  ],
-  "env": {
-    "GROQ_API_KEY": {
-      "description": "Groq API key for LLM calls"
-    },
-    "CATEGORICAL_MODEL_API_KEY": {
-      "description": "API key for categorical model"
-    },
-    "GROQ_MODEL_NAME": {
-      "description": "Main LLM model name"
-    },
-    "CATEGORICAL_MODEL": {
-      "description": "Categorical model name"
-    },
-    "FRONTEND_URL": {
-      "description": "Frontend URL for CORS"
-    }
-  }
+  ]
 }
