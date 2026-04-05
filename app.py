@@ -86,7 +86,7 @@ def index():
     return jsonify({"status": "ok", "message": "IEEE Chatbot API is running."})
 
 @app.route('/api/warmup', methods=['GET', 'POST'])
-async def warmup():
+def warmup():
     """
     Minimal LLM call to warm up the provider's cold start.
     """
@@ -96,7 +96,7 @@ async def warmup():
         {"role": "user", "content": "test"}
     ]
     # Use the fastest model for rollup warmup
-    result = await call_groq(warmup_msgs, model=CATEGORICAL_MODEL)
+    result = asyncio.run(call_groq(warmup_msgs, model=CATEGORICAL_MODEL))
     if not result:
         return jsonify({"status": "error", "message": "Failed to connect to AI provider. Check API keys."}), 503
     return jsonify({"status": "warmed_up", "message": "Backend is ready."})
@@ -104,7 +104,7 @@ async def warmup():
 
 
 @app.route('/api/chat', methods=['POST'])
-async def chat():
+def chat():
     data = request.json
     messages = data.get('messages')
     
@@ -117,7 +117,7 @@ async def chat():
     # Routing based on user selected mode
     if mode == 'student_branch':
         print(f"Routing to Student Branch (Normal AI) -> Query: '{user_query}'")
-        res = await handle_student_branch_chat(user_query, call_groq)
+        res = asyncio.run(handle_student_branch_chat(user_query, call_groq))
         if "error" in res:
              return jsonify(res), 500
         # No sources needed for student branch
@@ -141,7 +141,7 @@ async def chat():
         class_task = call_groq(classification_msgs, model=CATEGORICAL_MODEL)
         search_task = search_ieee(user_query)
         
-        class_res, search_results = await asyncio.gather(class_task, search_task)
+        class_res, search_results = asyncio.run(asyncio.gather(class_task, search_task))
 
         if not class_res:
             print("Error: Classification task returned no result.")
@@ -156,7 +156,7 @@ async def chat():
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ]
-            greet_res = await call_groq(greet_msgs, temperature=0.7)
+            greet_res = asyncio.run(call_groq(greet_msgs, temperature=0.7))
             return jsonify(greet_res)
 
         # CASE B: REJECTED
@@ -190,7 +190,7 @@ async def chat():
             {"role": "user", "content": f"Context:\n{context_str}\n\nUser Question: {user_query}"}
         ]
 
-        synth_res = await call_groq(synthesis_msgs)
+        synth_res = asyncio.run(call_groq(synthesis_msgs))
         if not synth_res:
             print("Error: Synthesis task returned no result.")
             return jsonify({"error": "Synthesis failed - AI provider did not respond"}), 500
