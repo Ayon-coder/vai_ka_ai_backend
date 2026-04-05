@@ -128,81 +128,88 @@ async def chat():
     # IEEE DEEP DIVE MODE (Strict Search & Classification)
     # ---------------------------------------------------------
 
-    # STEP 1: Classify the query using the strict classifier prompt
+    # STEP 1 & 2: Classify and Search CONCURRENTLY to save time
+    print(f"Processing query: '{user_query}'...")
+    
     classification_msgs = [
         {"role": "system", "content": CLASSIFIER_PROMPT},
         {"role": "user", "content": user_query}
     ]
-    
-    # Use a faster, smaller model for rapid classification checks
-    class_res = await call_groq(classification_msgs, model=CATEGORICAL_MODEL)
-    if not class_res:
-        return jsonify({"error": "Classification failed"}), 500
-    
-    category = class_res['choices'][0]['message']['content'].strip().upper()
-    print(f"Query: '{user_query}' -> Category: {category}")
 
-    # CASE A: GREETING
-    if category == "GREETING":
-        greet_msgs = [
+    try:
+        # Run classification and search at the same time
+        class_task = call_groq(classification_msgs, model=CATEGORICAL_MODEL)
+        search_task = search_ieee(user_query)
+        
+        class_res, search_results = await asyncio.gather(class_task, search_task)
+
+        if not class_res:
+            print("Error: Classification task returned no result.")
+            return jsonify({"error": "Classification failed"}), 500
+        
+        category = class_res['choices'][0]['message']['content'].strip().upper()
+        print(f"Category: {category} | Search Results: {len(search_results) if search_results else 0}")
+
+        # CASE A: GREETING
+        if category == "GREETING":
+            greet_msgs = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_query}
+            ]
+            greet_res = await call_groq(greet_msgs, temperature=0.7)
+            return jsonify(greet_res)
+
+        # CASE B: REJECTED
+        if category == "REJECTED":
+            return jsonify({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": REJECTION_MESSAGE
+                    }
+                }],
+                "is_rejected": True
+            })
+
+        # CASE C: TECHNICAL (Allowed)
+        # STEP 3: Format Context
+        context_parts = ["<IEEE_SOURCES>"]
+        for i, r in enumerate(search_results or [], 1):
+            year = "N/A"
+            year_match = re.search(r'\b(19|20)\d{2}\b', r['snippet'])
+            if year_match:
+                year = year_match.group(0)
+            context_parts.append(f"[Source {i}]\nTitle: {r['title']}\nYear: {year}\nContent: {r['snippet']}\n")
+        context_parts.append("</IEEE_SOURCES>")
+        
+        context_str = "\n".join(context_parts)
+
+        # STEP 4: Synthesis
+        synthesis_msgs = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_query}
+            {"role": "user", "content": f"Context:\n{context_str}\n\nUser Question: {user_query}"}
         ]
-        greet_res = await call_groq(greet_msgs, temperature=0.7)
-        return jsonify(greet_res)
 
-    # CASE B: REJECTED
-    if category == "REJECTED":
-        return jsonify({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": REJECTION_MESSAGE
-                }
-            }],
-            "is_rejected": True
-        })
+        synth_res = await call_groq(synthesis_msgs)
+        if not synth_res:
+            print("Error: Synthesis task returned no result.")
+            return jsonify({"error": "Synthesis failed - AI provider did not respond"}), 500
 
-    # CASE C: TECHNICAL (Allowed)
-    # STEP 2: Search IEEE (Now async)
-    search_results = await search_ieee(user_query)
-    
-    # STEP 3: Format Context in <IEEE_SOURCES> tags
-    context_parts = ["<IEEE_SOURCES>"]
-    for i, r in enumerate(search_results, 1):
-        year = "N/A" # Search tool doesn't always provide year, can be improved
-        # Try to extract year from snippet if possible
-        year_match = re.search(r'\b(19|20)\d{2}\b', r['snippet'])
-        if year_match:
-            year = year_match.group(0)
-            
-        context_parts.append(f"[Source {i}]\nTitle: {r['title']}\nYear: {year}\nContent: {r['snippet']}\n")
-    context_parts.append("</IEEE_SOURCES>")
-    
-    context_str = "\n".join(context_parts)
+        # Return answer along with sources metadata
+        final_response = synth_res.copy()
+        final_response['sources'] = search_results if search_results else []
+        
+        # Check if the model said it couldn't find information
+        content = final_response['choices'][0]['message']['content']
+        if "I could not find this in IEEE sources" in content or not search_results:
+             if not search_results and "I could not find" not in content:
+                 final_response['choices'][0]['message']['content'] = NOT_FOUND_MESSAGE
 
-    # STEP 4: Synthesis using the full SYSTEM_PROMPT
-    synthesis_msgs = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Context:\n{context_str}\n\nUser Question: {user_query}"}
-    ]
+        return jsonify(final_response)
 
-    synth_res = await call_groq(synthesis_msgs)
-    if not synth_res:
-        return jsonify({"error": "Synthesis failed"}), 500
-
-    # Return answer along with sources metadata
-    final_response = synth_res.copy()
-    final_response['sources'] = search_results if search_results else []
-    
-    # Check if the model said it couldn't find information
-    content = final_response['choices'][0]['message']['content']
-    if "I could not find this in IEEE sources" in content or not search_results:
-         # Double check if searches were empty and prompt wasn't followed
-         if not search_results and "I could not find" not in content:
-             final_response['choices'][0]['message']['content'] = NOT_FOUND_MESSAGE
-
-    return jsonify(final_response)
+    except Exception as e:
+        print(f"Chat execution error: {str(e)}")
+        return jsonify({"error": f"Internal server error: {type(e).__name__}"}), 500
 
 if __name__ == '__main__':
     # When running locally, Flask development server can handle some concurrency with threaded=True
