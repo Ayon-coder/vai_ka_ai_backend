@@ -21,25 +21,13 @@ load_dotenv()
 
 app = Flask(__name__)
 
-def run_async(coro):
-    """Helper to run async code safely in sync context (handles Vercel/serverless)."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # No loop running, create one
-        return asyncio.run(coro)
-    else:
-        # Loop already running, use a new thread
-        with ThreadPoolExecutor() as executor:
-            return executor.submit(asyncio.run, coro).result()
-
 # Allow cross-origin requests from the separately deployed frontend
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
 CORS(app, origins=[FRONTEND_URL] if FRONTEND_URL != "*" else "*")
 
 # Parse comma-separated API keys into lists for load balancing
-GROQ_API_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEY", "").split(",") if k.strip()]
-CATEGORICAL_API_KEYS = [k.strip() for k in os.getenv("CATEGORICAL_MODEL_API_KEY", "").split(",") if k.strip()]
+GROQ_API_KEYS = [k.strip(' "\'') for k in os.getenv("GROQ_API_KEY", "").split(",") if k.strip()]
+CATEGORICAL_API_KEYS = [k.strip(' "\'') for k in os.getenv("CATEGORICAL_MODEL_API_KEY", "").split(",") if k.strip()]
 
 # Fallback: if no categorical keys set, use the main keys
 if not CATEGORICAL_API_KEYS:
@@ -96,11 +84,11 @@ async def call_groq(messages, model=None, temperature=0):
         return None
 
 @app.route('/')
-def index():
+async def index():
     return jsonify({"status": "ok", "message": "IEEE Chatbot API is running."})
 
 @app.route('/api/warmup', methods=['GET', 'POST'])
-def warmup():
+async def warmup():
     """
     Minimal LLM call to warm up the provider's cold start.
     """
@@ -110,15 +98,13 @@ def warmup():
         {"role": "user", "content": "test"}
     ]
     # Use the fastest model for rollup warmup
-    result = run_async(call_groq(warmup_msgs, model=CATEGORICAL_MODEL))
+    result = await call_groq(warmup_msgs, model=CATEGORICAL_MODEL)
     if not result:
         return jsonify({"status": "error", "message": "Failed to connect to AI provider. Check API keys."}), 503
     return jsonify({"status": "warmed_up", "message": "Backend is ready."})
 
-
-
 @app.route('/api/chat', methods=['POST'])
-def chat():
+async def chat():
     data = request.json
     messages = data.get('messages')
     
@@ -131,7 +117,7 @@ def chat():
     # Routing based on user selected mode
     if mode == 'student_branch':
         print(f"Routing to Student Branch (Normal AI) -> Query: '{user_query}'")
-        res = run_async(handle_student_branch_chat(user_query, call_groq))
+        res = await handle_student_branch_chat(user_query, call_groq)
         if "error" in res:
              return jsonify(res), 500
         # No sources needed for student branch
@@ -149,13 +135,12 @@ def chat():
         {"role": "system", "content": CLASSIFIER_PROMPT},
         {"role": "user", "content": user_query}
     ]
-
     try:
         # Run classification and search at the same time
         class_task = call_groq(classification_msgs, model=CATEGORICAL_MODEL)
         search_task = search_ieee(user_query)
         
-        class_res, search_results = run_async(asyncio.gather(class_task, search_task))
+        class_res, search_results = await asyncio.gather(class_task, search_task)
 
         if not class_res:
             print("Error: Classification task returned no result.")
@@ -170,7 +155,7 @@ def chat():
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ]
-            greet_res = run_async(call_groq(greet_msgs, temperature=0.7))
+            greet_res = await call_groq(greet_msgs, temperature=0.7)
             return jsonify(greet_res)
 
         # CASE B: REJECTED
@@ -204,7 +189,7 @@ def chat():
             {"role": "user", "content": f"Context:\n{context_str}\n\nUser Question: {user_query}"}
         ]
 
-        synth_res = run_async(call_groq(synthesis_msgs))
+        synth_res = await call_groq(synthesis_msgs)
         if not synth_res:
             print("Error: Synthesis task returned no result.")
             return jsonify({"error": "Synthesis failed - AI provider did not respond"}), 500

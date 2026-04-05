@@ -24,18 +24,6 @@ load_dotenv()
 
 app = Flask(__name__)
 
-def run_async(coro):
-    """Helper to run async code safely in sync context (handles Vercel/serverless)."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # No loop running, create one
-        return asyncio.run(coro)
-    else:
-        # Loop already running, use a new thread
-        with ThreadPoolExecutor() as executor:
-            return executor.submit(asyncio.run, coro).result()
-
 # Allow cross-origin requests from the separately deployed frontend
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
 CORS(app, origins=[FRONTEND_URL] if FRONTEND_URL != "*" else "*")
@@ -99,11 +87,11 @@ async def call_groq(messages, model=None, temperature=0):
         return None
 
 @app.route('/')
-def index():
+async def index():
     return jsonify({"status": "ok", "message": "IEEE Chatbot API is running."})
 
 @app.route('/api/warmup', methods=['GET', 'POST'])
-def warmup():
+async def warmup():
     """
     Minimal LLM call to warm up the provider's cold start.
     """
@@ -113,15 +101,13 @@ def warmup():
         {"role": "user", "content": "test"}
     ]
     # Use the fastest model for rollup warmup
-    result = run_async(call_groq(warmup_msgs, model=CATEGORICAL_MODEL))
+    result = await call_groq(warmup_msgs, model=CATEGORICAL_MODEL)
     if not result:
         return jsonify({"status": "error", "message": "Failed to connect to AI provider. Check API keys."}), 503
     return jsonify({"status": "warmed_up", "message": "Backend is ready."})
 
-
-
 @app.route('/api/chat', methods=['POST'])
-def chat():
+async def chat():
     data = request.json
     messages = data.get('messages')
     
@@ -134,7 +120,7 @@ def chat():
     # Routing based on user selected mode
     if mode == 'student_branch':
         print(f"Routing to Student Branch (Normal AI) -> Query: '{user_query}'")
-        res = run_async(handle_student_branch_chat(user_query, call_groq))
+        res = await handle_student_branch_chat(user_query, call_groq)
         if "error" in res:
              return jsonify(res), 500
         # No sources needed for student branch
@@ -158,7 +144,7 @@ def chat():
         class_task = call_groq(classification_msgs, model=CATEGORICAL_MODEL)
         search_task = search_ieee(user_query)
         
-        class_res, search_results = run_async(asyncio.gather(class_task, search_task))
+        class_res, search_results = await asyncio.gather(class_task, search_task)
 
         if not class_res:
             print("Error: Classification task returned no result.")
@@ -173,7 +159,7 @@ def chat():
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ]
-            greet_res = run_async(call_groq(greet_msgs, temperature=0.7))
+            greet_res = await call_groq(greet_msgs, temperature=0.7)
             return jsonify(greet_res)
 
         # CASE B: REJECTED
@@ -207,7 +193,7 @@ def chat():
             {"role": "user", "content": f"Context:\n{context_str}\n\nUser Question: {user_query}"}
         ]
 
-        synth_res = run_async(call_groq(synthesis_msgs))
+        synth_res = await call_groq(synthesis_msgs)
         if not synth_res:
             print("Error: Synthesis task returned no result.")
             return jsonify({"error": "Synthesis failed - AI provider did not respond"}), 500
@@ -227,6 +213,7 @@ def chat():
     except Exception as e:
         print(f"Chat execution error: {str(e)}")
         return jsonify({"error": f"Internal server error: {type(e).__name__}"}), 500
+00
 
 if __name__ == '__main__':
     # When running locally, Flask development server can handle some concurrency with threaded=True
