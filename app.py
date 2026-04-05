@@ -6,6 +6,8 @@ import httpx
 import re
 import asyncio
 import random
+import sys
+from concurrent.futures import ThreadPoolExecutor
 
 # Import custom modules (Deep Dive Logic)
 from deep_dive.prompt import SYSTEM_PROMPT, CLASSIFIER_PROMPT, REJECTION_MESSAGE, NOT_FOUND_MESSAGE, IDENTITY_MESSAGE
@@ -18,6 +20,18 @@ from student_branch.chat import handle_student_branch_chat
 load_dotenv()
 
 app = Flask(__name__)
+
+def run_async(coro):
+    """Helper to run async code safely in sync context (handles Vercel/serverless)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop running, create one
+        return asyncio.run(coro)
+    else:
+        # Loop already running, use a new thread
+        with ThreadPoolExecutor() as executor:
+            return executor.submit(asyncio.run, coro).result()
 
 # Allow cross-origin requests from the separately deployed frontend
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
@@ -96,7 +110,7 @@ def warmup():
         {"role": "user", "content": "test"}
     ]
     # Use the fastest model for rollup warmup
-    result = asyncio.run(call_groq(warmup_msgs, model=CATEGORICAL_MODEL))
+    result = run_async(call_groq(warmup_msgs, model=CATEGORICAL_MODEL))
     if not result:
         return jsonify({"status": "error", "message": "Failed to connect to AI provider. Check API keys."}), 503
     return jsonify({"status": "warmed_up", "message": "Backend is ready."})
@@ -117,7 +131,7 @@ def chat():
     # Routing based on user selected mode
     if mode == 'student_branch':
         print(f"Routing to Student Branch (Normal AI) -> Query: '{user_query}'")
-        res = asyncio.run(handle_student_branch_chat(user_query, call_groq))
+        res = run_async(handle_student_branch_chat(user_query, call_groq))
         if "error" in res:
              return jsonify(res), 500
         # No sources needed for student branch
@@ -141,7 +155,7 @@ def chat():
         class_task = call_groq(classification_msgs, model=CATEGORICAL_MODEL)
         search_task = search_ieee(user_query)
         
-        class_res, search_results = asyncio.run(asyncio.gather(class_task, search_task))
+        class_res, search_results = run_async(asyncio.gather(class_task, search_task))
 
         if not class_res:
             print("Error: Classification task returned no result.")
@@ -156,7 +170,7 @@ def chat():
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ]
-            greet_res = asyncio.run(call_groq(greet_msgs, temperature=0.7))
+            greet_res = run_async(call_groq(greet_msgs, temperature=0.7))
             return jsonify(greet_res)
 
         # CASE B: REJECTED
@@ -190,7 +204,7 @@ def chat():
             {"role": "user", "content": f"Context:\n{context_str}\n\nUser Question: {user_query}"}
         ]
 
-        synth_res = asyncio.run(call_groq(synthesis_msgs))
+        synth_res = run_async(call_groq(synthesis_msgs))
         if not synth_res:
             print("Error: Synthesis task returned no result.")
             return jsonify({"error": "Synthesis failed - AI provider did not respond"}), 500
