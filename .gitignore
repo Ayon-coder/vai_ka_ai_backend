@@ -1,0 +1,23 @@
+# Virtual environment
+chatenv/
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Node
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+
+# Tests
+tests/
+test_*.py

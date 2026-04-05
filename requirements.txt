@@ -1,0 +1,8 @@
+flask
+flask-cors
+python-dotenv
+httpx
+asgiref
+duckduckgo-search
+googlesearch-python
+ddgs
