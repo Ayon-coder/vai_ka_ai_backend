@@ -1,9 +1,11 @@
 {
+  "buildCommand": "pip install -r api/requirements.txt",
   "functions": {
     "api/app.py": {
       "runtime": "@vercel/python@4.1.0",
       "maxDuration": 60,
-      "memory": 1024
+      "memory": 1024,
+      "pythonVersion": "3.11"
     }
   },
   "rewrites": [
