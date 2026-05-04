@@ -6,8 +6,6 @@ import httpx
 import re
 import asyncio
 import random
-import sys
-from concurrent.futures import ThreadPoolExecutor
 
 # Import custom modules (Deep Dive Logic)
 from deep_dive.prompt import SYSTEM_PROMPT, CLASSIFIER_PROMPT, REJECTION_MESSAGE, NOT_FOUND_MESSAGE, IDENTITY_MESSAGE
@@ -15,6 +13,9 @@ from deep_dive.tool import search_ieee
 
 # Import Student Branch Logic
 from student_branch.chat import handle_student_branch_chat
+
+# Import context builder (regex-based context vector)
+from context_builder import build_context_vector, build_slim_history
 
 # Load environment variables
 load_dotenv()
@@ -37,9 +38,13 @@ GROQ_MODEL_NAME = os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile")
 CATEGORICAL_MODEL = os.getenv("CATEGORICAL_MODEL", "llama-3.1-8b-instant")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+# Max number of recent messages to keep in the context window sent to the LLM.
+# Each user+assistant exchange = 2 messages, so 10 = up to 5 turns of memory.
+CONTEXT_WINDOW_SIZE = 10
+
 print(f"Loaded {len(GROQ_API_KEYS)} main API key(s), {len(CATEGORICAL_API_KEYS)} categorical API key(s)")
 
-async def call_groq(messages, model=None, temperature=0):
+async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
     """
     Utility function to call the Groq API asynchronously.
     Randomly selects an API key from the appropriate pool:
@@ -66,7 +71,7 @@ async def call_groq(messages, model=None, temperature=0):
         "model": model,
         "messages": messages,
         "temperature": temperature,
-        "max_completion_tokens": 1024,
+        "max_completion_tokens": max_tokens,
         "top_p": 1,
         "stream": False
     }
@@ -107,21 +112,29 @@ async def warmup():
 async def chat():
     data = request.json
     messages = data.get('messages')
-    
+
     if not messages or not isinstance(messages, list):
         return jsonify({"error": "Invalid messages format"}), 400
 
-    user_query = messages[-1].get('content')
-    mode = data.get('mode', 'deep_dive') # Default to deep_dive if not provided
+    # --- Context Queue: keep only the most recent N messages ---
+    # This forms the "context vector" sent to the LLM, giving it memory
+    # of the last CONTEXT_WINDOW_SIZE messages (user + assistant turns).
+    context_window = messages[-CONTEXT_WINDOW_SIZE:]
+
+    # The latest user query is always the last message in the window
+    user_query = context_window[-1].get('content', '')
+    mode = data.get('mode', 'deep_dive')  # Default to deep_dive if not provided
+
+    print(f"[Context] Window size: {len(context_window)} | Mode: {mode} | Query: '{user_query[:80]}'")
 
     # Routing based on user selected mode
     if mode == 'student_branch':
         print(f"Routing to Student Branch (Normal AI) -> Query: '{user_query}'")
-        res = await handle_student_branch_chat(user_query, call_groq)
+        res = await handle_student_branch_chat(context_window, call_groq)
         if "error" in res:
-             return jsonify(res), 500
+            return jsonify(res), 500
         # No sources needed for student branch
-        res['sources'] = [] 
+        res['sources'] = []
         return jsonify(res)
 
     # ---------------------------------------------------------
@@ -183,13 +196,45 @@ async def chat():
         
         context_str = "\n".join(context_parts)
 
-        # STEP 4: Synthesis
-        synthesis_msgs = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context_str}\n\nUser Question: {user_query}"}
-        ]
+        # STEP 4: Synthesis — regex context vector + slim history
+        #
+        # 1. build_context_vector() runs regex patterns over all prior turns
+        #    to extract IEEE standards, acronyms, topics, specs, and years.
+        #    This gives the LLM a compact semantic summary of what the
+        #    conversation has been about, in ~50 tokens instead of ~500.
+        #
+        # 2. build_slim_history() keeps the last 2 full user+assistant pairs
+        #    verbatim (for coherence) and compresses older turns to first
+        #    sentence — drastically cutting token usage for long conversations.
+        #
+        # 3. The current user query is replaced with an augmented version that
+        #    embeds the live IEEE search results.
 
-        synth_res = await call_groq(synthesis_msgs)
+        ctx_vector = build_context_vector(context_window)
+        slim_history = build_slim_history(context_window, max_prior_turns=2)
+
+        # Augment the system prompt with the extracted context vector
+        system_with_ctx = (
+            SYSTEM_PROMPT
+            + (f"\n\n{ctx_vector}" if ctx_vector else "")
+        )
+
+        augmented_user_msg = {
+            "role": "user",
+            "content": (
+                f"IEEE Source Context:\n{context_str}\n\n"
+                f"User Question: {user_query}"
+            )
+        }
+        synthesis_msgs = (
+            [{"role": "system", "content": system_with_ctx}]
+            + slim_history
+            + [augmented_user_msg]
+        )
+
+        print(f"[Synthesis] msgs={len(synthesis_msgs)} | vector={'yes' if ctx_vector else 'no'}")
+
+        synth_res = await call_groq(synthesis_msgs, max_tokens=600)
         if not synth_res:
             print("Error: Synthesis task returned no result.")
             return jsonify({"error": "Synthesis failed - AI provider did not respond"}), 500

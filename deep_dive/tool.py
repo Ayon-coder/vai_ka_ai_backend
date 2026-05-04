@@ -2,6 +2,9 @@ from ddgs import DDGS
 from googlesearch import search as gsearch
 import asyncio
 
+# Max characters kept per search snippet — keeps the IEEE context block lean.
+SNIPPET_MAX_CHARS = 250
+
 
 async def fetch_ddgs(query):
     """Fetch results from DuckDuckGo in a thread."""
@@ -18,10 +21,11 @@ async def fetch_ddgs(query):
                 )
 
                 for r in ddgs_results or []:
+                    snippet = r.get("body", "")
                     results.append({
                         "title": r.get("title", "IEEE Content"),
                         "link": r.get("href", ""),
-                        "snippet": r.get("body", "")
+                        "snippet": snippet[:SNIPPET_MAX_CHARS] + "..." if len(snippet) > SNIPPET_MAX_CHARS else snippet
                     })
         except Exception as e:
             print(f"DDGS Error ({type(e).__name__}): {e}")
@@ -37,7 +41,7 @@ async def fetch_google(query):
     def sync_google():
         results = []
         try:
-            for link in gsearch(query, num_results=5):
+            for link in gsearch(query, num_results=3):
                 results.append({
                     "title": "IEEE Source (via Google)",
                     "link": link,
@@ -80,13 +84,13 @@ async def search_ieee(query):
     # Add Google results only if DDG returned too few results
     seen_links = {r["link"] for r in all_results}
 
-    if len(all_results) < 5:
+    if len(all_results) < 3:
         for result in google_results:
             if result["link"] not in seen_links:
                 all_results.append(result)
                 seen_links.add(result["link"])
 
-            if len(all_results) >= 5:
+            if len(all_results) >= 3:
                 break
 
-    return all_results
+    return all_results[:3]
