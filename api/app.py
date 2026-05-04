@@ -171,10 +171,21 @@ async def chat():
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ]
-            greet_res = await call_groq(greet_msgs, temperature=0.7)
+            greet_res = await call_groq(greet_msgs, temperature=0.7, max_tokens=150)
             return jsonify(greet_res)
 
-        # CASE B: REJECTED
+        # CASE B: STUDENT BRANCH → redirect without LLM call
+        if category == "STUDENT_BRANCH":
+            return jsonify({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "That's a Student Branch question! Please switch to **IEEE Student Branch** mode for info about events, members, schedules & more 🎓"
+                    }
+                }]
+            })
+
+        # CASE C: REJECTED
         if category == "REJECTED":
             return jsonify({
                 "choices": [{
