@@ -73,6 +73,9 @@ async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
     else:
         key_pool = GROQ_API_KEYS
     
+    if not key_pool:
+        print(f"Error: No API keys available for model {model}")
+        return None
     api_key = random.choice(key_pool)
     print(f"[DEBUG] Model: {model} | Key: {api_key[:8]}...{api_key[-4:]} | Pool size: {len(key_pool)}")
         
@@ -213,6 +216,8 @@ async def chat():
                 {"role": "user", "content": user_query}
             ]
             greet_res = await call_groq(greet_msgs, temperature=0.7, max_tokens=150)
+            if not greet_res:
+                return jsonify({"error": "Greeting response failed"}), 500
             return jsonify(greet_res)
 
         # CASE B: STUDENT BRANCH → redirect without LLM call
@@ -238,7 +243,7 @@ async def chat():
                 "is_rejected": True
             })
 
-        # CASE C: TECHNICAL (Allowed)
+        # CASE D: TECHNICAL (Allowed)
         # STEP 3: Format Context
         context_parts = ["<IEEE_SOURCES>"]
         for i, r in enumerate(search_results or [], 1):
@@ -300,9 +305,8 @@ async def chat():
         
         # Check if the model said it couldn't find information
         content = final_response['choices'][0]['message']['content']
-        if "I could not find this in IEEE sources" in content or not search_results:
-             if not search_results and "I could not find" not in content:
-                 final_response['choices'][0]['message']['content'] = NOT_FOUND_MESSAGE
+        if not search_results and "I could not find" not in content:
+            final_response['choices'][0]['message']['content'] = NOT_FOUND_MESSAGE
 
         return jsonify(final_response)
 
