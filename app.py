@@ -24,7 +24,18 @@ app = Flask(__name__)
 
 # Allow cross-origin requests from the separately deployed frontend
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
-CORS(app, origins=[FRONTEND_URL] if FRONTEND_URL != "*" else "*")
+CORS(app, resources={r"/*": {"origins": FRONTEND_URL if FRONTEND_URL != "*" else "*"}})
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get('Origin')
+    if origin:
+        response.headers['Access-Control-Allow-Origin'] = origin
+    else:
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    return response
 
 # Parse comma-separated API keys into lists for load balancing
 GROQ_API_KEYS = [k.strip(' "\'') for k in os.getenv("GROQ_API_KEY", "").split(",") if k.strip()]
