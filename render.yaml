@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: ieee-chatbot-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: FRONTEND_URL
+        value: "*"
+      - key: GROQ_MODEL_NAME
+        value: llama-3.3-70b-versatile
+      - key: CATEGORICAL_MODEL
+        value: llama-3.1-8b-instant
+      - key: WATCHER_MODEL
+        value: llama-3.1-8b-instant
+      # The following keys have `sync: false` meaning you will securely
+      # enter them in the Render Dashboard and they won't be exposed in code.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CATEGORICAL_MODEL_API_KEY
+        sync: false
+      - key: WATCHER_MODEL_API_KEY
+        sync: false
