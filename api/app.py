@@ -25,6 +25,13 @@ load_dotenv()
 
 app = Flask(__name__)
 
+
+def _get_required_env(name):
+    value = os.getenv(name, "").strip(' "\'')
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
 # Allow cross-origin requests from the separately deployed frontend
 FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
 CORS(app, origins=[FRONTEND_URL] if FRONTEND_URL != "*" else "*")
@@ -40,9 +47,9 @@ if not CATEGORICAL_API_KEYS:
 if not WATCHER_API_KEYS:
     WATCHER_API_KEYS = CATEGORICAL_API_KEYS
 
-GROQ_MODEL_NAME = os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile")
-CATEGORICAL_MODEL = os.getenv("CATEGORICAL_MODEL", "llama-3.1-8b-instant")
-WATCHER_MODEL = os.getenv("WATCHER_MODEL", CATEGORICAL_MODEL)
+GROQ_MODEL_NAME = _get_required_env("GROQ_MODEL_NAME")
+CATEGORICAL_MODEL = _get_required_env("CATEGORICAL_MODEL")
+WATCHER_MODEL = os.getenv("WATCHER_MODEL", CATEGORICAL_MODEL).strip(' "\'') or CATEGORICAL_MODEL
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 CONTEXT_WINDOW_SIZE = 10

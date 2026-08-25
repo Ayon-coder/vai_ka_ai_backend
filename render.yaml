@@ -8,13 +8,13 @@ services:
       - key: PYTHON_VERSION
         value: "3.12.0"
       - key: FRONTEND_URL
-        value: "*"
+        value: "https://vaikaai.vercel.app"
       - key: GROQ_MODEL_NAME
-        value: llama-3.3-70b-versatile
+        value: qwen/qwen3.6-27b
       - key: CATEGORICAL_MODEL
-        value: llama-3.1-8b-instant
+        value: openai/gpt-oss-20b
       - key: WATCHER_MODEL
-        value: llama-3.1-8b-instant
+        value: openai/gpt-oss-20b
       # The following keys have `sync: false` meaning you will securely
       # enter them in the Render Dashboard and they won't be exposed in code.
       - key: GROQ_API_KEY
