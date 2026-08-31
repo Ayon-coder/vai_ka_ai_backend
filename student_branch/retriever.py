@@ -199,9 +199,27 @@ def _search_firestore(query_vector: list[float]) -> list[dict[str, Any]]:
     return [item for item in scored if item.get("similarity", 0.0) >= threshold]
 
 
+_config_warning_shown = False
+
+
 async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
     """Retrieve verified member records relevant to a Student Branch question."""
-    if not query or not query.strip() or not _retrieval_configured():
+    global _config_warning_shown
+    if not query or not query.strip():
+        return []
+    if not _retrieval_configured():
+        if not _config_warning_shown:
+            _config_warning_shown = True
+            missing = [
+                name
+                for name in ("FIREBASE_CREDS_BASE64", "GOOGLE_API_KEY")
+                if not _env(name)
+            ]
+            print(
+                "[Student RAG] DISABLED — missing env var(s): "
+                f"{', '.join(missing)}. Member answers will not be grounded. "
+                "Set them in the deployment environment to enable retrieval."
+            )
         return []
 
     try:
