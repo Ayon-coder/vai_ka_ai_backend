@@ -1,12 +1,12 @@
 {
   "functions": {
-    "api/app.py": {
+    "api/index.py": {
       "runtime": "@vercel/python@6.1.5",
-      "maxDuration": 10,
+      "maxDuration": 60,
       "memory": 1024
     }
   },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/app.py" }
+    { "source": "/(.*)", "destination": "/api/index.py" }
   ]
 }
