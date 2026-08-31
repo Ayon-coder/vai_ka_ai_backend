@@ -3,10 +3,12 @@ from llm_utils import clean_llm_response
 from .prompt import SYSTEM_PROMPT
 
 # The student branch model is a reasoning model: its chain-of-thought is billed
-# against the completion budget before any visible answer is produced. 1500
-# tokens comfortably covers the trace plus a full conversational reply, so
-# responses are never cut off with finish_reason="length".
-SYNTHESIS_MAX_TOKENS = 1500
+# against the completion budget before any visible answer is produced. With a
+# grounded RAG context the trace runs longer, and 1500 tokens occasionally
+# truncated the answer mid-stream (finish_reason=length), leaking the
+# reasoning trace into the user-facing content. 2048 matches the deep-dive
+# budget and leaves ample headroom for trace + full reply.
+SYNTHESIS_MAX_TOKENS = 2048
 
 
 def _build_retrieval_context(records):
