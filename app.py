@@ -13,6 +13,7 @@ from deep_dive.tool import search_ieee
 
 # Import Student Branch Logic
 from student_branch.chat import handle_student_branch_chat
+from student_branch.retriever import retrieve_student_branch
 
 # Import context builder (regex-based context vector)
 from context_builder import build_context_vector, build_slim_history
@@ -226,7 +227,7 @@ async def chat():
         # Run watcher + student branch chat concurrently
         is_gibberish, res = await asyncio.gather(
             moderate_input(user_query),
-            handle_student_branch_chat(context_window, call_groq)
+            handle_student_branch_chat(context_window, call_groq, retrieve_student_branch)
         )
 
         if is_gibberish:
@@ -236,6 +237,10 @@ async def chat():
                 "sources": []
             })
 
+        # The Student Branch handler returns the model response and its
+        # retrieved records separately so the client can display references.
+        res, rag_records = res
+
         if "error" in res:
             return jsonify(res), 500
 
@@ -244,7 +249,14 @@ async def chat():
         if not content:
             print("Error: Student branch response had no usable content.")
             return jsonify({"error": "Student Branch Synthesis returned empty content"}), 500
-        res['sources'] = []
+        res['sources'] = [
+            {
+                "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
+                "link": record.get("linkedin_url"),
+            }
+            for record in rag_records
+            if record.get("linkedin_url")
+        ]
         return jsonify(res)
 
     # ── DEEP DIVE MODE ───────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ services:
     name: ieee-chatbot-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.0"
@@ -23,3 +23,13 @@ services:
         sync: false
       - key: WATCHER_MODEL_API_KEY
         sync: false
+      - key: FIREBASE_CREDS_BASE64
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: FIREBASE_COLLECTION
+        value: ieee-members
+      - key: STUDENT_BRANCH_TOP_K
+        value: "4"
+      - key: STUDENT_BRANCH_MIN_SIMILARITY
+        value: "0.35"
