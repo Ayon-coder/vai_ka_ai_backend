@@ -249,24 +249,37 @@ async def chat():
         if not content:
             print("Error: Student branch response had no usable content.")
             return jsonify({"error": "Student Branch Synthesis returned empty content"}), 500
-        # Only attach clickable references/links if the user explicitly asked for LinkedIn, contact, or profile links
-        wants_links = bool(re.search(r'\b(linkedin|links?|profiles?|contacts?|connect|urls?|socials?)\b', user_query, re.IGNORECASE))
-        if wants_links:
-            # If user mentioned a specific person's name, only return their reference card
-            matching = [
-                r for r in rag_records
-                if r.get("linkedin_url") and (
-                    r.get("name", "").lower() in user_query.lower()
-                    or (r.get("name") and len([p for p in r.get("name").split() if p.lower() in user_query.lower() and len(p) > 2]) >= 2)
-                )
-            ]
-            selected = matching if matching else [r for r in rag_records if r.get("linkedin_url")][:1]
+        # Attach reference card when asked about a specific person or when links/profiles are requested
+        wants_links = bool(re.search(r'\b(linkedin|links?|profiles?|contacts?|connect|urls?|socials?|who is|tell me about|info on|details of)\b', user_query, re.IGNORECASE))
+        
+        # Check if user asked about a specific member
+        matching = [
+            r for r in rag_records
+            if r.get("linkedin_url") and (
+                r.get("name", "").lower() in user_query.lower()
+                or (r.get("name") and len([p for p in r.get("name").split() if p.lower() in user_query.lower() and len(p) > 2]) >= 2)
+            )
+        ]
+
+        # Do not attach source cards on team/domain list queries
+        is_team_query = any(k in user_query.lower() for k in ["team", "domain", "members", "list", "all"]) and not matching
+
+        if matching and not is_team_query:
             res['sources'] = [
                 {
                     "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
                     "link": record.get("linkedin_url"),
                 }
-                for record in selected
+                for record in matching[:1]
+            ]
+        elif wants_links and not is_team_query:
+            res['sources'] = [
+                {
+                    "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
+                    "link": record.get("linkedin_url"),
+                }
+                for record in rag_records[:1]
+                if record.get("linkedin_url")
             ]
         else:
             res['sources'] = []
