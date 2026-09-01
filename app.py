@@ -79,7 +79,8 @@ CONTEXT_WINDOW_SIZE = 10
 MODERATION_MAX_TOKENS = 256
 CLASSIFIER_MAX_TOKENS = 256
 GREETING_MAX_TOKENS = 512
-SYNTHESIS_MAX_TOKENS = 2048
+# 1500 tokens provides ample headroom for reasoning trace + complete answer
+SYNTHESIS_MAX_TOKENS = 1500
 
 # ── Watcher Prompt (gibberish/abuse detector) ──────────────────────────────────
 # The message is presented as delimited, untrusted DATA. Without that framing the
@@ -178,6 +179,11 @@ async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
         except Exception as e:
             print(f"[Groq Exception] {e}")
             continue
+
+    # Automatic failover to secondary model if primary model is rate limited / exhausted
+    if model != CATEGORICAL_MODEL and CATEGORICAL_MODEL:
+        print(f"[Failover] Primary model {model} exhausted or failed; failing over to {CATEGORICAL_MODEL}...")
+        return await call_groq(messages, model=CATEGORICAL_MODEL, temperature=temperature, max_tokens=max_tokens)
 
     print(f"Error: All {len(keys_to_try)} API key(s) failed for model {model}")
     return None
@@ -426,6 +432,18 @@ async def chat():
             })
 
         # CASE D: TECHNICAL (Allowed)
+        if not search_results:
+            print("[Synthesis] No IEEE search sources found; returning NOT_FOUND_MESSAGE without consuming LLM tokens.")
+            return jsonify({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": NOT_FOUND_MESSAGE
+                    }
+                }],
+                "sources": []
+            }), 200
+
         context_parts = ["<IEEE_SOURCES>"]
         for i, r in enumerate(search_results or [], 1):
             year = "N/A"
@@ -465,7 +483,7 @@ async def chat():
         if not synth_res:
             print("Error: Synthesis task returned no result.")
             return jsonify({
-                "choices": [{"message": {"role": "assistant", "content": NOT_FOUND_MESSAGE}}],
+                "choices": [{"message": {"role": "assistant", "content": "I am experiencing high traffic right now. Please try asking again in a moment!"}}],
                 "sources": search_results or []
             }), 200
 
@@ -474,7 +492,7 @@ async def chat():
 
         if not content:
             print("Error: Synthesis produced no usable content.")
-            final_response['choices'][0]['message']['content'] = NOT_FOUND_MESSAGE
+            final_response['choices'][0]['message']['content'] = "I am experiencing high traffic right now. Please try asking again in a moment!"
         elif not search_results and "I could not find" not in content:
             final_response['choices'][0]['message']['content'] = NOT_FOUND_MESSAGE
 

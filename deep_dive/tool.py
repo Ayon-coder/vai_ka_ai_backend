@@ -190,15 +190,22 @@ async def fetch_google(query):
 def _build_query_tiers(query):
     """
     Progressively broader queries, tried in order until enough hits come back.
-
-    A strict ``site:ieee.org`` filter misses anything published on IEEE's other
-    hosts (ieeexplore.ieee.org, computer.org, edu.ieee.org, ...), which is why
-    tier 1 alone can return zero results for perfectly valid technical topics.
+    Strips conversational prefixes to improve search engine keyword matching.
     """
     cleaned = _sanitize(query)
+    # Remove common conversational filler from search query for much higher hit rates
+    search_keywords = re.sub(
+        r"^(?:what\s+(?:is|are)|explain|tell\s+me\s+about|how\s+does|describe|can\s+you\s+explain|give\s+me\s+info\s+on)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not search_keywords or len(search_keywords) < 3:
+        search_keywords = cleaned
+
     return [
-        f"site:ieee.org {cleaned}",
-        f"{cleaned} (site:ieee.org OR site:ieeexplore.ieee.org)",
+        f"{search_keywords} (site:ieee.org OR site:ieeexplore.ieee.org OR site:standards.ieee.org OR site:spectrum.ieee.org)",
+        f"{search_keywords} IEEE",
         f"{cleaned} IEEE",
     ]
 
