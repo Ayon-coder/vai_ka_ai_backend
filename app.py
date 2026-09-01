@@ -249,14 +249,27 @@ async def chat():
         if not content:
             print("Error: Student branch response had no usable content.")
             return jsonify({"error": "Student Branch Synthesis returned empty content"}), 500
-        res['sources'] = [
-            {
-                "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
-                "link": record.get("linkedin_url"),
-            }
-            for record in rag_records
-            if record.get("linkedin_url")
-        ]
+        # Only attach clickable references/links if the user explicitly asked for LinkedIn, contact, or profile links
+        wants_links = bool(re.search(r'\b(linkedin|links?|profiles?|contacts?|connect|urls?|socials?)\b', user_query, re.IGNORECASE))
+        if wants_links:
+            # If user mentioned a specific person's name, only return their reference card
+            matching = [
+                r for r in rag_records
+                if r.get("linkedin_url") and (
+                    r.get("name", "").lower() in user_query.lower()
+                    or (r.get("name") and len([p for p in r.get("name").split() if p.lower() in user_query.lower() and len(p) > 2]) >= 2)
+                )
+            ]
+            selected = matching if matching else [r for r in rag_records if r.get("linkedin_url")][:1]
+            res['sources'] = [
+                {
+                    "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
+                    "link": record.get("linkedin_url"),
+                }
+                for record in selected
+            ]
+        else:
+            res['sources'] = []
         return jsonify(res)
 
     # ── DEEP DIVE MODE ───────────────────────────────────────────────────────
