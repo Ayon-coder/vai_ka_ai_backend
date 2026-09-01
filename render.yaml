@@ -10,7 +10,7 @@ services:
       - key: FRONTEND_URL
         value: "https://vaikaai.vercel.app"
       - key: GROQ_MODEL_NAME
-        value: qwen/qwen3.6-27b
+        value: groq/compound
       - key: CATEGORICAL_MODEL
         value: openai/gpt-oss-20b
       - key: WATCHER_MODEL

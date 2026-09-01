@@ -73,8 +73,30 @@ def _env(name: str, default: str = "") -> str:
     return value
 
 
+_google_key_lock = threading.Lock()
+_google_key_index = 0
+
+
+def _get_google_api_keys() -> list[str]:
+    """Parse comma-separated Google API keys into a list."""
+    raw = _env("GOOGLE_API_KEY")
+    return [k.strip(' "\'') for k in raw.split(",") if k.strip()]
+
+
+def _get_round_robin_google_keys() -> list[str]:
+    """Return keys rotated by round-robin index for load balancing and failover."""
+    keys = _get_google_api_keys()
+    if not keys:
+        return []
+    global _google_key_index
+    with _google_key_lock:
+        idx = _google_key_index % len(keys)
+        _google_key_index = (idx + 1) % len(keys)
+    return keys[idx:] + keys[:idx]
+
+
 def _retrieval_configured() -> bool:
-    return bool(_env("FIREBASE_CREDS_BASE64") and _env("GOOGLE_API_KEY"))
+    return bool(_env("FIREBASE_CREDS_BASE64") and _get_google_api_keys())
 
 
 def _get_firestore_client():
@@ -251,8 +273,11 @@ def _get_embedding_client() -> httpx.AsyncClient:
 
 
 async def _embed_query(query: str) -> list[float]:
-    """Create a query vector with connection reuse."""
-    api_key = _env("GOOGLE_API_KEY")
+    """Create a query vector with connection reuse, round-robin key rotation, and 429 failover."""
+    keys_to_try = _get_round_robin_google_keys()
+    if not keys_to_try:
+        raise RuntimeError("No GOOGLE_API_KEY configured")
+
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"{EMBEDDING_MODEL}:embedContent"
@@ -265,17 +290,33 @@ async def _embed_query(query: str) -> list[float]:
     }
 
     client = _get_embedding_client()
-    response = await client.post(
-        url,
-        headers={"x-goog-api-key": api_key},
-        json=payload,
-    )
-    response.raise_for_status()
-    values = response.json().get("embedding", {}).get("values")
+    last_err = None
+    for api_key in keys_to_try:
+        try:
+            response = await client.post(
+                url,
+                headers={"x-goog-api-key": api_key},
+                json=payload,
+            )
+            if response.status_code == 200:
+                values = response.json().get("embedding", {}).get("values")
+                if not isinstance(values, list) or len(values) != EMBEDDING_DIMENSIONS:
+                    raise RuntimeError("Embedding provider returned an unexpected vector")
+                return [float(value) for value in values]
+            elif response.status_code == 429:
+                masked_key = f"...{api_key[-4:]}" if len(api_key) > 4 else "key"
+                print(f"[Google 429] Rate limit on embedding key {masked_key}; trying next key...")
+                last_err = RuntimeError(f"Google embedding rate limit 429 on {masked_key}")
+                continue
+            else:
+                response.raise_for_status()
+        except Exception as exc:
+            last_err = exc
+            continue
 
-    if not isinstance(values, list) or len(values) != EMBEDDING_DIMENSIONS:
-        raise RuntimeError("Embedding provider returned an unexpected vector")
-    return [float(value) for value in values]
+    if last_err:
+        raise last_err
+    raise RuntimeError("All Google API keys failed for embedding")
 
 
 # ── Similarity helpers ────────────────────────────────────────────────
