@@ -65,10 +65,15 @@ async def handle_student_branch_chat(context_window, call_groq_func, retrieve_fu
     if not synth_res:
         return {"error": "Student Branch Synthesis failed"}, []
 
-    # Verify the response actually carries usable text. clean_llm_response strips
-    # any <think> markup and falls back to the reasoning trace, so this only
-    # fails when the model genuinely returned nothing.
+    # If synthesis yielded no usable clean content, return standard fallback message
     if not clean_llm_response(synth_res):
-        return {"error": "Student Branch Synthesis returned empty content"}, []
+        synth_res = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "I have no information on that till now."
+                }
+            }]
+        }
 
     return synth_res, records

@@ -38,17 +38,12 @@ _THINK_CLOSE_RE = re.compile(r"\A.*?</think>", re.DOTALL | re.IGNORECASE)
 
 def strip_reasoning_tags(text):
     """
-    Remove any ``<think>`` chain-of-thought markup from ``text``.
-
-    Handles all three malformed shapes seen in practice:
-      * ``<think>reasoning</think>answer``  -> ``answer``
-      * ``reasoning</think>answer``         -> ``answer``  (opener lost)
-      * ``<think>reasoning``                -> ``""``      (truncated)
+    Remove any reasoning/thinking markup or plaintext thinking traces from ``text``.
     """
     if not text:
         return ""
 
-    # 1. Well-formed blocks first.
+    # 1. Well-formed <think>...</think> blocks.
     text = _THINK_BLOCK_RE.sub("", text)
 
     # 2. Orphan closing tag: everything before it was reasoning.
@@ -58,7 +53,26 @@ def strip_reasoning_tags(text):
     # 3. Orphan opening tag: everything after it was reasoning.
     text = _THINK_OPEN_RE.sub("", text)
 
-    return text.strip()
+    # 4. Plaintext thinking traces (e.g. "Here's a thinking process:\n...")
+    if re.search(r"^\s*(?:Here'?s\s+a\s+thinking\s+process|Thinking\s+Process|Thought\s+Process|Let'?s\s+think)", text, re.IGNORECASE):
+        # Check if there is an explicit final answer label
+        split_match = re.search(
+            r'(?:Output(?:\s*generation)?|Final\s*Answer|Response|Assistant|Answer):\s*(.*)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if split_match and split_match.group(1).strip():
+            text = split_match.group(1).strip()
+        else:
+            # Check for double-newline separating thoughts from final response
+            parts = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+            # If the last paragraph looks like a normal answer without thinking markers
+            if parts and not re.search(r'\b(analyze|user asks|user input|step \d|rule \d|let me|i will|check rules)\b', parts[-1], re.I):
+                text = parts[-1]
+            else:
+                text = ""
+
+    return text.strip(' "\'\n')
 
 
 def extract_message(res):
@@ -77,16 +91,7 @@ def extract_message(res):
 
 def clean_llm_content(res):
     """
-    Return ONLY ``message.content``, with any ``<think>`` markup stripped.
-
-    Use this for *classification* calls (moderation, category routing) where the
-    answer is matched against known labels. Never fall back to the reasoning
-    trace here: a trace naturally restates every candidate label ("is this SAFE
-    or GIBBERISH?", "GREETING, TECHNICAL, STUDENT_BRANCH or REJECTED?"), so
-    substring-matching it would yield essentially random verdicts.
-
-    Returns ``""`` when there is no visible content, letting callers apply an
-    explicit default.
+    Return ONLY ``message.content``, with any reasoning traces stripped.
     """
     message = extract_message(res)
     if not message:
@@ -96,26 +101,15 @@ def clean_llm_content(res):
 
 def clean_llm_response(res):
     """
-    Extract the clean, user-facing answer from a Groq chat-completion response.
-
-    Order of preference:
-      1. ``message.content`` with any ``<think>`` markup stripped.
-      2. ``message.reasoning`` (also stripped) — a last resort for when the model
-         spent its entire budget reasoning and never produced a visible answer.
-
-    Use this for prose answers shown to the user. For label/verdict extraction
-    use :func:`clean_llm_content` instead.
-
-    Returns ``""`` when nothing usable is present, so callers can detect failure
-    with a simple falsy check.
+    Extract the clean, user-facing answer from a chat-completion response.
+    Never returns raw internal reasoning scratchpads.
     """
     content = clean_llm_content(res)
     if content:
         return content
 
-    # No visible answer. Falling back to the reasoning trace is preferable to
-    # showing the user an empty message bubble.
-    return strip_reasoning_tags(extract_message(res).get("reasoning") or "")
+    # If message.content is empty, do NOT leak message.reasoning to the user.
+    return ""
 
 
 def finalize_response(res):

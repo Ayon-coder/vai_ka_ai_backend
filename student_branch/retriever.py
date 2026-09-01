@@ -48,12 +48,12 @@ TEAM_PATTERNS: dict[str, list[str]] = {
         r"\b(media|videos?|photo|photos|photography|photographers?|camera|social\s*media)\b",
     ],
     "core-others": [
-        r"\b(core|leads?|heads?|officers?|executives?|cabinet|management)\b",
+        r"\b(core|leads?|heads?|officers?|executives?|cabinet|management|committee|board|excom|eb|chair|vice\s*chair|secretary|treasurer)\b",
     ],
 }
 
 _ALL_TEAMS_PATTERNS = [
-    r"\b(all\s+teams?|all\s+members?|every\s+member|list\s+(all\s+)?teams?|what\s+teams?|how\s+many\s+teams?|who\s+all\s+are\s+in|entire\s+team|everyone)\b"
+    r"\b(all\s+teams?|all\s+members?|every\s+member|list\s+(all\s+)?teams?|what\s+teams?|how\s+many\s+teams?|who\s+all\s+are\s+in|entire\s+team|everyone|all\s+committee|whole\s+team)\b"
 ]
 
 _LISTING_SIGNALS = [

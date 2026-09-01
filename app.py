@@ -285,8 +285,11 @@ async def chat():
         # Strip any chain-of-thought before the payload reaches the client.
         res, content = finalize_response(res)
         if not content:
-            print("Error: Student branch response had no usable content.")
-            return jsonify({"error": "Student Branch Synthesis returned empty content"}), 500
+            content = "I have no information on that till now."
+            if "choices" in res and res["choices"]:
+                res["choices"][0]["message"]["content"] = content
+            else:
+                res["choices"] = [{"message": {"role": "assistant", "content": content}}]
         # Attach reference card when asked about a specific person or when links/profiles are requested
         wants_links = bool(re.search(r'\b(linkedin|links?|profiles?|contacts?|connect|urls?|socials?|who is|tell me about|info on|details of)\b', user_query, re.IGNORECASE))
         
