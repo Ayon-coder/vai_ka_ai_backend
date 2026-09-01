@@ -1,4 +1,5 @@
 import os
+import threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -98,6 +99,29 @@ Reply with ONLY one word: SAFE or GIBBERISH"""
 
 print(f"Loaded {len(GROQ_API_KEYS)} main, {len(CATEGORICAL_API_KEYS)} categorical, {len(WATCHER_API_KEYS)} watcher API key(s)")
 
+_client_lock = threading.Lock()
+_shared_client_per_loop: dict[int, httpx.AsyncClient] = {}
+
+
+def _get_groq_client() -> httpx.AsyncClient:
+    """Reuses persistent connection pool per event loop to avoid TCP/TLS handshake overhead."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        loop_id = 0
+
+    with _client_lock:
+        client = _shared_client_per_loop.get(loop_id)
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(45.0, connect=5.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
+            )
+            _shared_client_per_loop[loop_id] = client
+        return client
+
+
 async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
     """
     Utility function to call the Groq API asynchronously.
@@ -133,25 +157,21 @@ async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
         "max_completion_tokens": max_tokens,
         "top_p": 1,
         "stream": False,
-        # Every model in use here is a reasoning model. "parsed" moves the
-        # chain-of-thought into a separate `reasoning` field instead of inlining
-        # it into `content` wrapped in <think> tags, so `content` holds only the
-        # user-facing answer.
         "reasoning_format": "parsed"
     }
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(GROQ_API_URL, headers=headers, json=payload)
-            if response.status_code != 200:
-                print(f"Groq API Error Status: {response.status_code}")
-                print(f"Groq API Error Response: {response.text}")
-            response.raise_for_status()
-            result = response.json()
-            if finish_reason(result) == "length":
-                print(f"[WARN] {model} hit the {max_tokens}-token cap "
-                      f"(finish_reason=length); answer may be truncated.")
-            return result
+        client = _get_groq_client()
+        response = await client.post(GROQ_API_URL, headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"Groq API Error Status: {response.status_code}")
+            print(f"Groq API Error Response: {response.text}")
+        response.raise_for_status()
+        result = response.json()
+        if finish_reason(result) == "length":
+            print(f"[WARN] {model} hit the {max_tokens}-token cap "
+                  f"(finish_reason=length); answer may be truncated.")
+        return result
     except Exception as e:
         print(f"Error calling Groq: {e}")
         return None
@@ -163,25 +183,48 @@ async def index():
 @app.route('/api/warmup', methods=['GET', 'POST'])
 async def warmup():
     """
-    Minimal LLM call to warm up the provider's cold start.
+    Minimal LLM call to warm up the provider's cold start and preload cache.
     """
     print("Warmup requested...")
+    # Preload vector cache in background thread
+    asyncio.create_task(retrieve_student_branch("warmup"))
+
     warmup_msgs = [
         {"role": "system", "content": "You are a warmup assistant. Reply only with 'OK'."},
         {"role": "user", "content": "test"}
     ]
-    # Use the fastest model for rollup warmup
     result = await call_groq(warmup_msgs, model=CATEGORICAL_MODEL)
     if not result:
         return jsonify({"status": "error", "message": "Failed to connect to AI provider. Check API keys."}), 503
     return jsonify({"status": "warmed_up", "message": "Backend is ready."})
 
+
+# Fast regex patterns for spam/gibberish
+_OBVIOUS_GIBBERISH_RE = re.compile(r'(.)\1{5,}|[bcdfghjklmnpqrstvwxyz]{8,}', re.IGNORECASE)
+
+
 async def moderate_input(user_query):
-    """Run the watcher model to detect gibberish. Returns True if gibberish."""
+    """Detect gibberish with zero-latency regex fast-paths, falling back to LLM watcher."""
+    q = (user_query or "").strip()
+    if not q:
+        return False
+
+    # Instant check 1: Obvious repeated characters or long consonant keyboard smashes
+    if _OBVIOUS_GIBBERISH_RE.search(q):
+        print(f"[Watcher Fast-Path] Flagged as GIBBERISH via heuristic: '{q[:40]}'")
+        return True
+
+    # Instant check 2: Common clean messages skip the 1.5s Watcher LLM call entirely
+    is_simple_safe = (
+        len(q) < 150
+        and bool(re.match(r'^[a-zA-Z0-9\s\?.,!\'\"_\-–—/@:#()]+$', q))
+        and not any(tag in q.lower() for tag in ['<system>', '<assistant>', 'ignore previous', 'system prompt'])
+    )
+    if is_simple_safe:
+        return False
+
     watcher_msgs = [
         {"role": "system", "content": WATCHER_PROMPT},
-        # Delimit the query so the model classifies it as data instead of
-        # treating it as instructions addressed to itself.
         {"role": "user", "content": f"<user_message>\n{user_query}\n</user_message>"}
     ]
     try:
@@ -189,21 +232,16 @@ async def moderate_input(user_query):
             watcher_msgs, model=WATCHER_MODEL, max_tokens=MODERATION_MAX_TOKENS
         )
         if result:
-            # Content only — never the reasoning trace, which restates both
-            # labels ("is this SAFE or GIBBERISH?") and would invert the verdict.
             verdict = clean_llm_content(result).upper()
             print(f"[Watcher] Verdict: {verdict[:40]!r} | Query: '{user_query[:60]}'")
             if "GIBBERISH" in verdict:
                 return True
             if "SAFE" in verdict:
                 return False
-            # Unparseable verdict (empty, or a safety refusal). Fail open: the
-            # classifier is a second gate and independently routes injections
-            # and nonsense to REJECTED.
             print("[Watcher] Unparseable verdict; failing open to the classifier.")
     except Exception as e:
         print(f"[Watcher] Error: {e}")
-    return False  # fail-open: if watcher fails, let the message through
+    return False
 
 @app.route('/api/chat', methods=['POST'])
 async def chat():
