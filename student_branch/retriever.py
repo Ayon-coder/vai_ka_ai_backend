@@ -1,9 +1,14 @@
 """
 Firestore-backed semantic retrieval for the IEEE Student Branch assistant.
 
-Member embeddings are created offline and stored in Firestore. This module
-embeds an incoming question, runs a nearest-neighbour query, and returns only
-directory fields that are safe for the answer-generation prompt.
+Member embeddings are created offline and stored in Firestore using team
+subcollections:  ieee-members/{team-slug}/members/{id-name}
+
+This module supports two retrieval modes:
+1. **Team listing** — detects queries like "who are the tech team members?"
+   and returns ALL members of that team (bypasses top_k limit).
+2. **Semantic search** — embeds the query and runs nearest-neighbour search
+   across all team subcollections via a Firestore collection-group query.
 """
 
 import asyncio
@@ -11,6 +16,7 @@ import base64
 import json
 import math
 import os
+import re
 import threading
 from typing import Any
 
@@ -23,6 +29,24 @@ DEFAULT_MIN_SIMILARITY = 0.35
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
 EMBEDDING_TIMEOUT = 12.0
+
+# Maps keyword fragments (found in user queries) to Firestore team-slug doc IDs.
+TEAM_KEYWORDS: dict[str, str] = {
+    "tech": "tech-team",
+    "pr": "pr-team",
+    "public relation": "pr-team",
+    "design": "design-team",
+    "content": "content-team",
+    "media": "media-team",
+    "core": "core-others",
+}
+
+# Signals that the user wants a *listing* (all members), not a single lookup.
+_LISTING_SIGNALS = [
+    "members", "names", "list", "who are", "who is in", "who all",
+    "people in", "show me", "tell me about the", "everyone in",
+    "all the", "give me the", "how many",
+]
 
 _firebase_lock = threading.Lock()
 _firestore_client = None
@@ -65,6 +89,51 @@ def _get_firestore_client():
         return _firestore_client
 
 
+# ── Team-listing detection ────────────────────────────────────────────
+
+def _detect_team_listing(query: str) -> str | None:
+    """Return the Firestore team-slug if the query is asking to list a team's members.
+
+    Returns None when the query is NOT a team-listing request (e.g. asking
+    about a specific person, or a general branch question).
+    """
+    q = query.lower()
+    # Must contain at least one listing signal word/phrase
+    has_listing_signal = any(signal in q for signal in _LISTING_SIGNALS)
+    if not has_listing_signal:
+        return None
+    # Match the longest keyword first so "public relation" beats "pr"
+    for keyword in sorted(TEAM_KEYWORDS, key=len, reverse=True):
+        if keyword in q:
+            return TEAM_KEYWORDS[keyword]
+    return None
+
+
+def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
+    """Fetch ALL members of a specific team (no top_k limit)."""
+    client = _get_firestore_client()
+    collection_name = _env("FIREBASE_COLLECTION", DEFAULT_COLLECTION)
+    team_doc_ref = client.collection(collection_name).document(team_slug)
+
+    # 1. Fast path: read the members list directly from parent document
+    team_snap = team_doc_ref.get()
+    if team_snap.exists:
+        team_data = team_snap.to_dict() or {}
+        members_list = team_data.get("members")
+        if members_list and isinstance(members_list, list):
+            return [_member_result(m, similarity=1.0) for m in members_list]
+
+    # 2. Fallback: stream subcollection docs
+    results = []
+    members_col = team_doc_ref.collection("members")
+    for doc in members_col.stream():
+        data = doc.to_dict() or {}
+        results.append(_member_result(data, similarity=1.0))
+    return results
+
+
+# ── Embedding ─────────────────────────────────────────────────────────
+
 async def _embed_query(query: str) -> list[float]:
     """Create a query vector with the same model and dimensions used at ingestion."""
     api_key = _env("GOOGLE_API_KEY")
@@ -92,6 +161,8 @@ async def _embed_query(query: str) -> list[float]:
         raise RuntimeError("Embedding provider returned an unexpected vector")
     return [float(value) for value in values]
 
+
+# ── Similarity helpers ────────────────────────────────────────────────
 
 def _vector_values(value: Any) -> list[float]:
     """Convert Firestore Vector/list representations into numeric values."""
@@ -134,6 +205,8 @@ def _top_k() -> int:
         return DEFAULT_TOP_K
 
 
+# ── Result formatting ─────────────────────────────────────────────────
+
 def _member_result(data: dict[str, Any], similarity: float) -> dict[str, Any]:
     """Keep only directory fields that the public chatbot may use."""
     metadata = data.get("metadata")
@@ -155,17 +228,22 @@ def _member_result(data: dict[str, Any], similarity: float) -> dict[str, Any]:
     return {key: value for key, value in result.items() if value is not None and value != ""}
 
 
+# ── Vector search (collection-group) ─────────────────────────────────
+
 def _search_firestore(query_vector: list[float]) -> list[dict[str, Any]]:
-    """Run native Firestore vector search, with an exact-search fallback."""
+    """Run native Firestore vector search across all team subcollections,
+    with an exact client-side cosine fallback."""
     from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
     from google.cloud.firestore_v1.vector import Vector
 
     client = _get_firestore_client()
-    collection = client.collection(_env("FIREBASE_COLLECTION", DEFAULT_COLLECTION))
+    collection_name = _env("FIREBASE_COLLECTION", DEFAULT_COLLECTION)
     top_k = _top_k()
 
     try:
-        vector_query = collection.find_nearest(
+        # Collection group query searches across all 'members' subcollections
+        members_group = client.collection_group("members")
+        vector_query = members_group.find_nearest(
             vector_field="embedding",
             query_vector=Vector(query_vector),
             distance_measure=DistanceMeasure.COSINE,
@@ -179,19 +257,22 @@ def _search_firestore(query_vector: list[float]) -> list[dict[str, Any]]:
             similarity = 1.0 - float(distance) if distance is not None else 0.0
             scored.append(_member_result(data, similarity))
     except Exception as exc:
-        # This fallback is useful while the Firestore vector index is pending.
+        # Fallback: iterate all team subcollections client-side
         print(f"[Student RAG] Native vector search unavailable ({type(exc).__name__}); using exact fallback.")
         scored = []
-        for document in collection.stream():
-            data = document.to_dict() or {}
-            embedding = data.get("embedding")
-            if embedding is None:
-                continue
-            try:
-                similarity = _cosine_similarity(query_vector, _vector_values(embedding))
-            except (TypeError, ValueError):
-                continue
-            scored.append(_member_result(data, similarity))
+        col_ref = client.collection(collection_name)
+        for team_doc in col_ref.stream():
+            members_col = team_doc.reference.collection("members")
+            for document in members_col.stream():
+                data = document.to_dict() or {}
+                embedding = data.get("embedding")
+                if embedding is None:
+                    continue
+                try:
+                    similarity = _cosine_similarity(query_vector, _vector_values(embedding))
+                except (TypeError, ValueError):
+                    continue
+                scored.append(_member_result(data, similarity))
         scored.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
         scored = scored[:top_k]
 
@@ -199,11 +280,18 @@ def _search_firestore(query_vector: list[float]) -> list[dict[str, Any]]:
     return [item for item in scored if item.get("similarity", 0.0) >= threshold]
 
 
+# ── Public entry point ────────────────────────────────────────────────
+
 _config_warning_shown = False
 
 
 async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
-    """Retrieve verified member records relevant to a Student Branch question."""
+    """Retrieve verified member records relevant to a Student Branch question.
+
+    Two retrieval paths:
+    1. Team-listing queries → fetch ALL members of the detected team.
+    2. Everything else    → semantic vector search (top_k limited).
+    """
     global _config_warning_shown
     if not query or not query.strip():
         return []
@@ -223,6 +311,15 @@ async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
         return []
 
     try:
+        # Path 1: Direct team listing (bypasses vector search entirely)
+        team_slug = _detect_team_listing(query.strip())
+        if team_slug:
+            results = await asyncio.to_thread(_fetch_team_members, team_slug)
+            if results:
+                return results
+            # Fall through to vector search if the team slug was not found
+
+        # Path 2: Semantic vector search across all subcollections
         query_vector = await _embed_query(query.strip())
         return await asyncio.to_thread(_search_firestore, query_vector)
     except Exception as exc:
