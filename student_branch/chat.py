@@ -27,7 +27,6 @@ def _build_retrieval_context(records):
                 ("Team", "team"),
                 ("Department", "department"),
                 ("College email", "college_email"),
-                ("LinkedIn", "linkedin_url"),
                 ("Bio", "bio"),
                 ("Traits", "keywords_traits"),
                 ("Motivation", "inspiration_drive"),
