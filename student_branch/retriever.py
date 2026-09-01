@@ -30,22 +30,36 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 768
 EMBEDDING_TIMEOUT = 12.0
 
-# Maps keyword fragments (found in user queries) to Firestore team-slug doc IDs.
-TEAM_KEYWORDS: dict[str, str] = {
-    "tech": "tech-team",
-    "pr": "pr-team",
-    "public relation": "pr-team",
-    "design": "design-team",
-    "content": "content-team",
-    "media": "media-team",
-    "core": "core-others",
+# Robust regex patterns for teams with common typos and aliases
+TEAM_PATTERNS: dict[str, list[str]] = {
+    "tech-team": [
+        r"\b(tech|teach|tek|teck|technical|technology|developers?|coding|programmer|programming|web\s*dev|fullstack)\b",
+    ],
+    "pr-team": [
+        r"\b(pr|public\s*relations?|outreach|relations|spokesperson)\b",
+    ],
+    "design-team": [
+        r"\b(design|designers?|graphics?|ui\s*/?\s*ux|creatives?|poster|posters)\b",
+    ],
+    "content-team": [
+        r"\b(content|writers?|writing|editorial|blogs?|articles?)\b",
+    ],
+    "media-team": [
+        r"\b(media|videos?|photo|photos|photography|photographers?|camera|social\s*media)\b",
+    ],
+    "core-others": [
+        r"\b(core|leads?|heads?|officers?|executives?|cabinet|management)\b",
+    ],
 }
 
-# Signals that the user wants a *listing* (all members), not a single lookup.
+_ALL_TEAMS_PATTERNS = [
+    r"\b(all\s+teams?|all\s+members?|every\s+member|list\s+(all\s+)?teams?|what\s+teams?|how\s+many\s+teams?|who\s+all\s+are\s+in|entire\s+team|everyone)\b"
+]
+
 _LISTING_SIGNALS = [
     "members", "names", "list", "who are", "who is in", "who all",
-    "people in", "show me", "tell me about the", "everyone in",
-    "all the", "give me the", "how many",
+    "people in", "show me", "tell me about", "everyone in",
+    "all the", "give me the", "give me", "how many", "team", "domain", "dept", "department"
 ]
 
 _firebase_lock = threading.Lock()
@@ -92,20 +106,33 @@ def _get_firestore_client():
 # ── Team-listing detection ────────────────────────────────────────────
 
 def _detect_team_listing(query: str) -> str | None:
-    """Return the Firestore team-slug if the query is asking to list a team's members.
+    """Return the Firestore team-slug if the query is asking about a team's members.
 
-    Returns None when the query is NOT a team-listing request (e.g. asking
-    about a specific person, or a general branch question).
+    Returns:
+    - 'ALL_TEAMS' if asking for all teams/members
+    - 'tech-team', 'pr-team', etc. if asking for a specific team
+    - None if query is not team-related (e.g. asking about a person)
     """
-    q = query.lower()
-    # Must contain at least one listing signal word/phrase
-    has_listing_signal = any(signal in q for signal in _LISTING_SIGNALS)
-    if not has_listing_signal:
-        return None
-    # Match the longest keyword first so "public relation" beats "pr"
-    for keyword in sorted(TEAM_KEYWORDS, key=len, reverse=True):
-        if keyword in q:
-            return TEAM_KEYWORDS[keyword]
+    q = query.lower().strip()
+
+    # Check for all-teams queries
+    for pat in _ALL_TEAMS_PATTERNS:
+        if re.search(pat, q, re.IGNORECASE):
+            return "ALL_TEAMS"
+
+    # Check for specific team patterns
+    has_signal = any(signal in q for signal in _LISTING_SIGNALS)
+
+    for slug, patterns in TEAM_PATTERNS.items():
+        for pat in patterns:
+            if re.search(pat, q, re.IGNORECASE):
+                # If it explicitly matches team keyword AND has a signal or simply mentions team
+                if has_signal or "team" in q or "domain" in q or "group" in q:
+                    return slug
+                # For words like 'tech', 'pr', 'design' combined with question words
+                if any(w in q for w in ["who", "what", "which", "list", "tell", "show", "give"]):
+                    return slug
+
     return None
 
 
@@ -113,6 +140,17 @@ def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
     """Fetch ALL members of a specific team (no top_k limit)."""
     client = _get_firestore_client()
     collection_name = _env("FIREBASE_COLLECTION", DEFAULT_COLLECTION)
+
+    if team_slug == "ALL_TEAMS":
+        results = []
+        for doc in client.collection(collection_name).stream():
+            team_data = doc.to_dict() or {}
+            members_list = team_data.get("members")
+            if members_list and isinstance(members_list, list):
+                for m in members_list:
+                    results.append(_member_result(m, similarity=1.0))
+        return results
+
     team_doc_ref = client.collection(collection_name).document(team_slug)
 
     # 1. Fast path: read the members list directly from parent document
