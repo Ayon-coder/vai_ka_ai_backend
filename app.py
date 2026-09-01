@@ -125,9 +125,7 @@ def _get_groq_client() -> httpx.AsyncClient:
 async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
     """
     Utility function to call the Groq API asynchronously.
-    Randomly selects an API key from the appropriate pool:
-    - Categorical model → CATEGORICAL_API_KEYS
-    - All other models → GROQ_API_KEYS
+    Tries all available API keys in the appropriate pool with automatic failover on 429 or errors.
     """
     if model is None:
         model = GROQ_MODEL_NAME
@@ -143,13 +141,11 @@ async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
     if not key_pool:
         print(f"Error: No API keys available for model {model}")
         return None
-    api_key = random.choice(key_pool)
-    print(f"[DEBUG] Model: {model} | Pool size: {len(key_pool)} | Budget: {max_tokens}")
-        
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+
+    keys_to_try = list(key_pool)
+    random.shuffle(keys_to_try)
+    print(f"[DEBUG] Model: {model} | Pool size: {len(keys_to_try)} | Budget: {max_tokens}")
+
     payload = {
         "model": model,
         "messages": messages,
@@ -159,22 +155,32 @@ async def call_groq(messages, model=None, temperature=0, max_tokens=1024):
         "stream": False,
         "reasoning_format": "parsed"
     }
-    
-    try:
-        client = _get_groq_client()
-        response = await client.post(GROQ_API_URL, headers=headers, json=payload)
-        if response.status_code != 200:
-            print(f"Groq API Error Status: {response.status_code}")
-            print(f"Groq API Error Response: {response.text}")
-        response.raise_for_status()
-        result = response.json()
-        if finish_reason(result) == "length":
-            print(f"[WARN] {model} hit the {max_tokens}-token cap "
-                  f"(finish_reason=length); answer may be truncated.")
-        return result
-    except Exception as e:
-        print(f"Error calling Groq: {e}")
-        return None
+
+    client = _get_groq_client()
+    for api_key in keys_to_try:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        try:
+            response = await client.post(GROQ_API_URL, headers=headers, json=payload)
+            if response.status_code == 200:
+                result = response.json()
+                if finish_reason(result) == "length":
+                    print(f"[WARN] {model} hit the {max_tokens}-token cap (finish_reason=length)")
+                return result
+            elif response.status_code == 429:
+                masked_key = f"...{api_key[-4:]}" if len(api_key) > 4 else "key"
+                print(f"[Groq 429] Rate limit on {masked_key}; trying next available key...")
+                continue
+            else:
+                print(f"[Groq Error] Status: {response.status_code} | Text: {response.text[:200]}")
+        except Exception as e:
+            print(f"[Groq Exception] {e}")
+            continue
+
+    print(f"Error: All {len(keys_to_try)} API key(s) failed for model {model}")
+    return None
 
 @app.route('/')
 async def index():
@@ -280,7 +286,15 @@ async def chat():
         res, rag_records = res
 
         if "error" in res:
-            return jsonify(res), 500
+            return jsonify({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "I am experiencing high traffic right now. Please try asking again in a moment!"
+                    }
+                }],
+                "sources": []
+            }), 200
 
         # Strip any chain-of-thought before the payload reaches the client.
         res, content = finalize_response(res)
@@ -356,18 +370,12 @@ async def chat():
             })
 
         if not class_res:
-            print("Error: Classification task returned no result.")
-            return jsonify({"error": "Classification failed"}), 500
+            print("[Classifier] Empty result from classifier; defaulting to TECHNICAL.")
+            category = "TECHNICAL"
+        else:
+            category = clean_llm_content(class_res).upper()
         
-        category = clean_llm_content(class_res).upper()
         print(f"Category: {category[:60]!r} | Search Results: {len(search_results) if search_results else 0}")
-
-        # Substring matching rather than strict equality: the classifier may pad
-        # its answer with punctuation, markdown, or a short justification.
-        # Order matters — REJECTED is tested before TECHNICAL so a verdict like
-        # "REJECTED (not technical)" is not misread as TECHNICAL.
-        if not category:
-            print("[Classifier] Empty category; defaulting to TECHNICAL.")
 
         # CASE A: GREETING
         if "GREETING" in category:
@@ -379,10 +387,16 @@ async def chat():
                 greet_msgs, temperature=0.7, max_tokens=GREETING_MAX_TOKENS
             )
             if not greet_res:
-                return jsonify({"error": "Greeting response failed"}), 500
+                return jsonify({
+                    "choices": [{"message": {"role": "assistant", "content": "Hello! How can I help you today?"}}],
+                    "sources": []
+                }), 200
             greet_res, greet_content = finalize_response(greet_res)
             if not greet_content:
-                return jsonify({"error": "Greeting response was empty"}), 500
+                return jsonify({
+                    "choices": [{"message": {"role": "assistant", "content": "Hello! How can I help you today?"}}],
+                    "sources": []
+                }), 200
             greet_res['sources'] = []
             return jsonify(greet_res)
 
@@ -412,7 +426,6 @@ async def chat():
             })
 
         # CASE D: TECHNICAL (Allowed)
-        # STEP 3: Format Context
         context_parts = ["<IEEE_SOURCES>"]
         for i, r in enumerate(search_results or [], 1):
             year = "N/A"
@@ -423,20 +436,6 @@ async def chat():
         context_parts.append("</IEEE_SOURCES>")
         
         context_str = "\n".join(context_parts)
-
-        # STEP 4: Synthesis — regex context vector + slim history
-        #
-        # 1. build_context_vector() runs regex patterns over all prior turns
-        #    to extract IEEE standards, acronyms, topics, specs, and years.
-        #    This gives the LLM a compact semantic summary of what the
-        #    conversation has been about, in ~50 tokens instead of ~500.
-        #
-        # 2. build_slim_history() keeps the last 2 full user+assistant pairs
-        #    verbatim (for coherence) and compresses older turns to first
-        #    sentence — drastically cutting token usage for long conversations.
-        #
-        # 3. The current user query is replaced with an augmented version that
-        #    embeds the live IEEE search results.
 
         ctx_vector = build_context_vector(context_window)
         slim_history = build_slim_history(context_window, max_prior_turns=2)
@@ -465,16 +464,14 @@ async def chat():
         synth_res = await call_groq(synthesis_msgs, max_tokens=SYNTHESIS_MAX_TOKENS)
         if not synth_res:
             print("Error: Synthesis task returned no result.")
-            return jsonify({"error": "Synthesis failed - AI provider did not respond"}), 500
+            return jsonify({
+                "choices": [{"message": {"role": "assistant", "content": NOT_FOUND_MESSAGE}}],
+                "sources": search_results or []
+            }), 200
 
-        # Strip chain-of-thought and write the clean answer back into the payload
-        # (the frontend renders choices[0].message.content verbatim).
         final_response, content = finalize_response(synth_res)
         final_response['sources'] = search_results if search_results else []
 
-        # Guard the two degenerate outcomes:
-        #  - no sources were found, and the model didn't say so itself
-        #  - the model produced no visible answer at all
         if not content:
             print("Error: Synthesis produced no usable content.")
             final_response['choices'][0]['message']['content'] = NOT_FOUND_MESSAGE
@@ -485,7 +482,15 @@ async def chat():
 
     except Exception as e:
         print(f"Chat execution error: {str(e)}")
-        return jsonify({"error": f"Internal server error: {type(e).__name__}"}), 500
+        return jsonify({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "I ran into a temporary issue processing that request. Please try asking again in a moment!"
+                }
+            }],
+            "sources": []
+        }), 200
 
 if __name__ == '__main__':
     # When running locally, Flask development server can handle some concurrency with threaded=True
