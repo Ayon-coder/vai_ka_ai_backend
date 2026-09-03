@@ -14,6 +14,7 @@ from deep_dive.tool import search_ieee
 
 # Import Student Branch Logic
 from student_branch.chat import handle_student_branch_chat
+from student_branch.prompt import NO_INFO_MESSAGE
 from student_branch.retriever import retrieve_student_branch
 
 # Import context builder (regex-based context vector)
@@ -374,7 +375,7 @@ async def chat():
         content = stripped
 
         if not content:
-            content = "I have no information on that till now."
+            content = NO_INFO_MESSAGE
         if "choices" in res and res["choices"]:
             res["choices"][0]["message"]["content"] = content
         else:

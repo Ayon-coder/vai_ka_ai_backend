@@ -176,6 +176,64 @@ def strip_raw_links(text):
     return re.sub(r'\n{3,}', '\n\n', "\n".join(lines)).strip()
 
 
+# ── Self-contradicting refusal preambles ─────────────────────────────────────
+# A request for a member's name/department/role reads to a safety-tuned model
+# like a request for personal data, so it opens with a reflex refusal — then the
+# grounding rule wins and it answers properly anyway. The user sees
+# "I'm sorry, but I can't help with that." glued on top of a correct answer.
+# A refusal is only genuine when nothing substantive follows it.
+
+_APOLOGY_REFUSAL = (
+    r'(?:i\s?(?:\'|\u2019)?m\s+sorry|i\s+am\s+sorry|sorry|my\s+apolog(?:y|ies)|'
+    r'apolog(?:y|ies)|unfortunately)'
+    r'[^.!?\n]{0,120}?'
+    r'\b(?:can\s?(?:\'|\u2019)?t|cannot|can\s+not|unable|not\s+able|won\s?(?:\'|\u2019)?t)\b'
+    r'[^.!?\n]{0,120}'
+)
+
+_DIRECT_REFUSAL = (
+    r'i\s+(?:can\s?(?:\'|\u2019)?t|cannot|can\s+not|am\s+unable\s+to|'
+    r'(?:\'|\u2019)?m\s+unable\s+to|won\s?(?:\'|\u2019)?t)\s+'
+    r'(?:help|assist|comply|provide|answer|share|disclose|discuss|do\s+that|continue|engage)'
+    r'[^.!?\n]{0,120}'
+)
+
+_REFUSAL_PREAMBLE_RE = re.compile(
+    r'\A\s*(?:[*_]{1,2})?\s*(?:' + _APOLOGY_REFUSAL + r'|' + _DIRECT_REFUSAL + r')'
+    # The closing emphasis can sit on either side of the final punctuation:
+    # "**...that.**" and "**...that**." both occur.
+    r'(?:[*_]{1,2})?\s*[.!?]*\s*(?:[*_]{1,2})?\s*',
+    re.IGNORECASE,
+)
+
+# Below this, whatever follows the refusal is not a real answer (an emoji, a
+# stray bullet), so the refusal is genuine and must be left alone.
+_MIN_SUBSTANTIVE_ANSWER = 20
+
+
+def strip_refusal_preamble(text):
+    """
+    Drop a leading refusal/apology when a substantive answer follows it.
+
+    Genuine refusals — where the refusal *is* the whole reply — are returned
+    unchanged, so real moderation and off-topic responses still work.
+    """
+    if not text:
+        return ""
+
+    # A model can stack two of these ("I'm sorry. I can't help with that. <answer>").
+    for _ in range(3):
+        match = _REFUSAL_PREAMBLE_RE.match(text)
+        if not match:
+            break
+        remainder = text[match.end():].lstrip()
+        if len(remainder) < _MIN_SUBSTANTIVE_ANSWER:
+            break  # nothing real after it -> the refusal is the answer
+        text = remainder
+
+    return text.strip()
+
+
 def extract_message(res):
     """
     Return the assistant message dict from a chat-completion payload, or ``{}``
@@ -203,9 +261,14 @@ def clean_llm_content(res):
 def clean_llm_response(res):
     """
     Extract the clean, user-facing answer from a chat-completion response.
-    Never returns raw internal reasoning scratchpads.
+    Never returns raw internal reasoning scratchpads, and never a reflex refusal
+    that the model then contradicted with a real answer.
+
+    Note this deliberately builds on ``clean_llm_content`` rather than replacing
+    it: the watcher and classifier parse *verdicts*, not answers, so they must
+    keep seeing the model's output verbatim.
     """
-    content = clean_llm_content(res)
+    content = strip_refusal_preamble(clean_llm_content(res))
     if content:
         return content
 
