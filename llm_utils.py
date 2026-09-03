@@ -75,6 +75,107 @@ def strip_reasoning_tags(text):
     return text.strip(' "\'\n')
 
 
+# ── Raw-link stripping ───────────────────────────────────────────────────────
+# Student Branch answers must never carry raw URLs: the UI already renders every
+# verified LinkedIn profile as an interactive reference card (the ``sources``
+# array), so a URL in the message text is a duplicate of that card. The system
+# prompt asks the model not to emit URLs, but prompts are advisory — this is the
+# hard guarantee.
+
+_URL_BODY = r'(?:https?://|www\.)[^\s<>()\[\]{}"\'`]+'
+
+# Words a model puts in front of a URL: "LinkedIn:", "**Profile** -", "link:".
+_LINK_LABEL = (
+    r'\*{0,2}\b(?:linked\s?-?in|profiles?|links?|urls?|websites?|socials?|handles?)\b'
+    r'(?:\s+(?:profile|page|link|url))?\*{0,2}'
+)
+
+# [label](url) / [label](<url> "title") -> keep the human-readable label only.
+_MD_LINK_RE = re.compile(r'\[([^\]\n]*)\]\(\s*<?' + _URL_BODY + r'>?[^)\n]*\)')
+
+# <https://...> autolinks and bare URLs.
+_ANGLE_URL_RE = re.compile(r'<\s*' + _URL_BODY + r'\s*>')
+_BARE_URL_RE = re.compile(_URL_BODY)
+
+# Wrappers left empty once the URL inside them is gone: "()", "[ ]", "<>".
+_EMPTY_WRAPPER_RE = re.compile(r'\(\s*\)|\[\s*\]|<\s*>')
+
+# A parenthetical that only introduced the URL: "(LinkedIn:", "(see profile -".
+_PAREN_LABEL_RE = re.compile(
+    r'\(\s*(?:see\s+|his\s+|her\s+|their\s+)?' + _LINK_LABEL + r'\s*[:\-\u2013\u2014]?\s*\)',
+    re.IGNORECASE,
+)
+
+# A whole line that was only a labelled link: "- LinkedIn: <url>", "**Profile:**".
+_LABEL_ONLY_LINE_RE = re.compile(
+    r'^\s*(?:[-*\u2022+]|\d+[.)])?\s*' + _LINK_LABEL + r'\s*[:\-\u2013\u2014]?\s*$',
+    re.IGNORECASE,
+)
+
+# A line reduced to bullet/emphasis punctuation once its URL was removed.
+_PUNCT_ONLY_LINE_RE = re.compile(
+    r'^\s*(?:[-*\u2022+]|\d+[.)])?\s*(?:\*{1,2}|[:\-\u2013\u2014,;.])*\s*$'
+)
+
+# A short trailing clause left pointing at nothing ("... Suman leads Tech. See:").
+_TRAILING_CLAUSE_RE = re.compile(r'(?<=[.!?])[ \t]+[^.!?\n]{0,80}$')
+
+# Any URL — used to decide whether a line needs tidying at all.
+_HAS_LINK_RE = re.compile(r'(?:https?://|www\.)|\]\(', re.IGNORECASE)
+
+
+def _tidy_link_line(line):
+    """Clean a single line that had a URL removed from it. Returns ``None`` to
+    signal the line existed only to carry that URL and should be dropped."""
+    line = _PAREN_LABEL_RE.sub("", line)
+    line = _EMPTY_WRAPPER_RE.sub("", line)
+    line = re.sub(r'[ \t]{2,}', ' ', line)
+    line = re.sub(r'[ \t]+([,.;:!?])', r'\1', line).rstrip()
+
+    # The URL's introducer is now dangling ("... team. LinkedIn:"). Drop the
+    # whole fragment when it is short enough to be pure link scaffolding,
+    # otherwise just shed the orphaned separator.
+    if re.search(r'[,;:\-\u2013\u2014]$', line):
+        tail = _TRAILING_CLAUSE_RE.search(line)
+        if tail and len(tail.group(0).split()) <= 8:
+            line = line[:tail.start()].rstrip()
+        else:
+            line = re.sub(r'[ \t]*[,;:\-\u2013\u2014]+[ \t]*$', '', line).rstrip()
+
+    if _LABEL_ONLY_LINE_RE.match(line) or _PUNCT_ONLY_LINE_RE.match(line):
+        return None
+    return line
+
+
+def strip_raw_links(text):
+    """
+    Remove raw URLs — and the label remnants they leave behind — from ``text``.
+
+    Markdown links keep their label, so ``[LinkedIn](https://...)`` becomes
+    ``LinkedIn`` and the sentence around it still reads correctly. Lines and
+    parentheticals that existed *only* to carry the URL are dropped outright.
+    Lines with no URL are returned byte-for-byte untouched.
+    """
+    if not text:
+        return ""
+
+    lines = []
+    for line in text.split("\n"):
+        if not _HAS_LINK_RE.search(line):
+            lines.append(line)  # nothing to do — never reformat clean prose
+            continue
+
+        line = _MD_LINK_RE.sub(lambda m: m.group(1).strip(), line)
+        line = _ANGLE_URL_RE.sub("", line)
+        line = _BARE_URL_RE.sub("", line)
+
+        cleaned = _tidy_link_line(line)
+        if cleaned is not None:
+            lines.append(cleaned)
+
+    return re.sub(r'\n{3,}', '\n\n', "\n".join(lines)).strip()
+
+
 def extract_message(res):
     """
     Return the assistant message dict from a chat-completion payload, or ``{}``

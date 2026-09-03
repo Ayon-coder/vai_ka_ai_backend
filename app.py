@@ -20,7 +20,7 @@ from student_branch.retriever import retrieve_student_branch
 from context_builder import build_context_vector, build_slim_history
 
 # Import shared LLM response helpers (chain-of-thought stripping)
-from llm_utils import clean_llm_content, clean_llm_response, finalize_response, finish_reason
+from llm_utils import clean_llm_content, clean_llm_response, finalize_response, finish_reason, strip_raw_links
 
 # Load environment variables
 load_dotenv()
@@ -363,19 +363,37 @@ async def chat():
 
         # Strip any chain-of-thought before the payload reaches the client.
         res, content = finalize_response(res)
+
+        # Profiles are shown ONLY as interactive reference cards, so remove any
+        # raw URL the model wrote inline — otherwise the same LinkedIn appears
+        # twice: once as plain text and once as a card.
+        stripped = strip_raw_links(content)
+        if not stripped and content.strip():
+            # The reply was nothing but a link; the card now carries the answer.
+            stripped = "Here's the verified profile 👇"
+        content = stripped
+
         if not content:
             content = "I have no information on that till now."
-            if "choices" in res and res["choices"]:
-                res["choices"][0]["message"]["content"] = content
-            else:
-                res["choices"] = [{"message": {"role": "assistant", "content": content}}]
+        if "choices" in res and res["choices"]:
+            res["choices"][0]["message"]["content"] = content
+        else:
+            res["choices"] = [{"message": {"role": "assistant", "content": content}}]
 
-        # Attach reference card when asked about a specific person or when links/profiles/details are requested
-        wants_links = bool(re.search(r'\b(linkedin|links?|profiles?|contacts?|connect|urls?|socials?|who is|tell me about|info on|details of|details about|email|contact)\b', user_query, re.IGNORECASE))
-        
+        # ── Reference cards (the only channel for profile links) ──────────────
+        user_query_lower = user_query.lower()
+
+        # An explicit ask for a link/profile must always produce cards.
+        wants_links = bool(re.search(
+            r'\b(linked\s?-?in|profiles?|links?|urls?|socials?|handles?|connect)\b',
+            user_query, re.IGNORECASE))
+        # A softer "tell me about X" only gets a card when a person is in scope.
+        wants_details = bool(re.search(
+            r'\b(who is|tell me about|info on|details of|details about|email|contact)\b',
+            user_query, re.IGNORECASE))
+
         # Check if user asked about a specific member (match full name or tokens >= 3 chars)
         matching = []
-        user_query_lower = user_query.lower()
         for r in rag_records:
             if not r.get("linkedin_url"):
                 continue
@@ -390,24 +408,26 @@ async def chat():
         is_team_query = any(k in user_query_lower for k in ["team", "domain", "members", "list", "all"]) and not matching
 
         if matching and not is_team_query:
-            res['sources'] = [
-                {
-                    "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
-                    "link": record.get("linkedin_url"),
-                }
-                for record in matching[:2]
-            ]
-        elif (wants_links or len(rag_records) == 1) and not is_team_query:
-            res['sources'] = [
-                {
-                    "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
-                    "link": record.get("linkedin_url"),
-                }
-                for record in rag_records[:2]
-                if record.get("linkedin_url")
-            ]
+            card_records = matching[:2]
+        elif wants_links:
+            # Explicit link request: honour it even for a whole-team listing.
+            card_records = rag_records[:6] if is_team_query else rag_records[:2]
+        elif (wants_details or len(rag_records) == 1) and not is_team_query:
+            card_records = rag_records[:2]
         else:
-            res['sources'] = []
+            card_records = []
+
+        seen_links = set()
+        res['sources'] = []
+        for record in card_records:
+            link = record.get("linkedin_url")
+            if not link or link in seen_links:
+                continue
+            seen_links.add(link)
+            res['sources'].append({
+                "title": f"{record.get('name', 'Member')} — {record.get('team', 'IEEE Student Branch')}",
+                "link": link,
+            })
         return jsonify(res)
 
     # ── DEEP DIVE MODE ───────────────────────────────────────────────────────
