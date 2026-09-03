@@ -21,7 +21,7 @@ regardless of which model answered or how the completion terminated.
 
 This lives at the top level rather than inside ``app.py`` because ``app.py``
 imports ``student_branch.chat``, which also needs these helpers — importing them
-from ``app.py`` would create a circular import.
+from ``app.py`` would create a circular import..
 """
 
 import re
