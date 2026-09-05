@@ -371,11 +371,8 @@ def _fetch_team_members(team_slug: str, query: str = "") -> list[dict[str, Any]]
         except Exception:
             pass
 
-    # Only return member records if the user explicitly asked for members/roster
-    wants_members = any(w in query.lower() for w in ["member", "members", "who all", "everyone", "people", "names", "who is", "who are", "roster", "leads", "head", "chair", "lead"])
-    if wants_members:
-        return overview_records + members
-    return overview_records
+    # For any specific team, ALWAYS return the team overview + all its members
+    return overview_records + members
 
 
 # ── Embedding with persistent HTTP Client ──────────────────────────────

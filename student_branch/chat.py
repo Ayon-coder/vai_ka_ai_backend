@@ -17,7 +17,7 @@ def _build_retrieval_context(records):
         lines.append("No matching verified member records were retrieved.")
     else:
         member_idx = 1
-        is_bulk = len(records) > 10
+        is_bulk = len(records) > 15
         fields_to_include = (
             ("Name", "name"),
             ("Team", "team"),
