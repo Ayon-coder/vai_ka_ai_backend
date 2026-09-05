@@ -17,6 +17,24 @@ def _build_retrieval_context(records):
         lines.append("No matching verified member records were retrieved.")
     else:
         member_idx = 1
+        is_bulk = len(records) > 10
+        fields_to_include = (
+            ("Name", "name"),
+            ("Team", "team"),
+            ("Department", "department"),
+            ("Role", "role"),
+        ) if is_bulk else (
+            ("Name", "name"),
+            ("Team", "team"),
+            ("Department", "department"),
+            ("College email", "college_email"),
+            ("LinkedIn", "linkedin_url"),
+            ("Bio", "bio"),
+            ("Traits", "keywords_traits"),
+            ("Motivation", "inspiration_drive"),
+            ("Motto", "quote_motto"),
+        )
+
         for record in records:
             rec_type = record.get("type")
             if rec_type in ("team_overview", "all_teams_overview", "branch_overview", "basic_info"):
@@ -41,21 +59,12 @@ def _build_retrieval_context(records):
             else:
                 lines.append(f"[Member {member_idx}]")
                 member_idx += 1
-                for label, key in (
-                    ("Name", "name"),
-                    ("Team", "team"),
-                    ("Department", "department"),
-                    ("College email", "college_email"),
-                    ("LinkedIn", "linkedin_url"),
-                    ("Bio", "bio"),
-                    ("Traits", "keywords_traits"),
-                    ("Motivation", "inspiration_drive"),
-                    ("Motto", "quote_motto"),
-                ):
+                for label, key in fields_to_include:
                     value = record.get(key)
                     if value:
                         lines.append(f"{label}: {value}")
-                lines.append(f"Similarity: {record.get('similarity', 0):.4f}")
+                if not is_bulk:
+                    lines.append(f"Similarity: {record.get('similarity', 0):.4f}")
 
     lines.append("</STUDENT_BRANCH_CONTEXT>")
     return "\n".join(lines)
