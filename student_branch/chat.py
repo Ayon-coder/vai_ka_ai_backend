@@ -88,7 +88,10 @@ async def build_student_branch_messages(context_window, retrieve_func=None):
 
     records = []
     if retrieve_func is not None and user_query.strip():
-        records = await retrieve_func(user_query)
+        try:
+            records = await retrieve_func(user_query, context_window=context_window)
+        except TypeError:
+            records = await retrieve_func(user_query)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},

@@ -129,9 +129,49 @@ def _get_firestore_client():
         return _firestore_client
 
 
-# ── Team-listing detection ────────────────────────────────────────────
+# ── Team-listing detection & Conversational Follow-up Resolution ──────────────
 
-def _detect_team_listing(query: str) -> str | None:
+_ANAPHORIC_TEAM_PATTERNS = [
+    r"\b(that|this|the|same|said)\s+(team|domain|group|dept|department|committee)\b",
+    r"\b(its|their|the|those|these)\s+(members?|people|volunteers?|leads?|heads?|names?|roster)\b",
+    r"\b(who\s+are\s+(they|them|all\s+of\s+them))\b",
+    r"\b(who\s+is\s+in\s+(it|there|that|this))\b",
+    r"\b(who\s+all\s+are\s+in\s+(it|there|that|this))\b",
+    r"\b(who\s+is\s+on\s+(that|this|the)\s+team)\b",
+    r"\b(who\s+are\s+(the\s+)?(members|people|folks|volunteers|leads|heads))\b",
+    r"\b(who\s+(leads?|heads?)\s+(that|this|the)\s+team)\b",
+    r"\b(list\s+(them|its\s+members|their\s+members|the\s+members|that\s+team))\b",
+    r"\b(members?\s+of\s+(it|that|this|them))\b",
+    r"\b(current\s+members?\s+of\s+(that|this|the)\s+team)\b",
+    r"^(members\??|current\s+members\??|the\s+members\??|who\s+are\s+the\s+members\??|who\s+are\s+they\??|list\s+them\??)$",
+]
+
+
+def _resolve_team_from_context(context_window: list) -> str | None:
+    """
+    Search backwards through prior conversation turns to find the most recently
+    discussed team slug.
+    """
+    if not context_window or len(context_window) < 2:
+        return None
+
+    # Inspect prior messages in reverse (skip current last message)
+    for msg in reversed(context_window[:-1][-6:]):
+        if not isinstance(msg, dict):
+            continue
+        content = str(msg.get("content", "")).lower()
+        if not content:
+            continue
+
+        for slug, patterns in TEAM_PATTERNS.items():
+            for pat in patterns:
+                if re.search(pat, content, re.IGNORECASE):
+                    return slug
+
+    return None
+
+
+def _detect_team_listing(query: str, context_window: list = None) -> str | None:
     """Return the Firestore team-slug if the query is asking about a team's members.
 
     Returns:
@@ -146,7 +186,7 @@ def _detect_team_listing(query: str) -> str | None:
         if re.search(pat, q, re.IGNORECASE):
             return "ALL_TEAMS"
 
-    # Check for specific team patterns
+    # Check for specific team patterns directly in query
     has_signal = any(signal in q for signal in _LISTING_SIGNALS)
 
     for slug, patterns in TEAM_PATTERNS.items():
@@ -158,6 +198,18 @@ def _detect_team_listing(query: str) -> str | None:
                 # For words like 'tech', 'pr', 'design' combined with question words
                 if any(w in q for w in ["who", "what", "which", "list", "tell", "show", "give"]):
                     return slug
+
+    # Check for anaphoric / follow-up queries referring to a previously discussed team
+    is_anaphoric = any(re.search(pat, q, re.IGNORECASE) for pat in _ANAPHORIC_TEAM_PATTERNS)
+    is_general_member_q = any(w in q for w in ["member", "members", "who is", "who are", "names", "people", "roster", "list"]) and (
+        any(w in q for w in ["team", "it", "they", "them", "that", "this"]) or len(q.split()) <= 4
+    )
+
+    if (is_anaphoric or is_general_member_q) and context_window:
+        resolved_slug = _resolve_team_from_context(context_window)
+        if resolved_slug:
+            print(f"[Student RAG] Anaphoric query '{q[:40]}' resolved to team '{resolved_slug}' from context")
+            return resolved_slug
 
     return None
 
@@ -612,7 +664,7 @@ _GREETING_PATTERNS = [
 ]
 
 
-async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
+async def retrieve_student_branch(query: str, context_window: list = None) -> list[dict[str, Any]]:
     """Retrieve verified member records relevant to a Student Branch question.
 
     Optimized paths:
@@ -647,7 +699,7 @@ async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
 
     try:
         # Fast path 1: Team listing & descriptions from in-memory cache (0ms, no network)
-        team_slug = _detect_team_listing(q)
+        team_slug = _detect_team_listing(q, context_window=context_window)
         if team_slug:
             results = await asyncio.to_thread(_fetch_team_members, team_slug, q)
             if results:
