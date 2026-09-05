@@ -70,11 +70,17 @@ def _build_retrieval_context(records):
     return "\n".join(lines)
 
 
-async def handle_student_branch_chat(context_window, call_groq_func, retrieve_func=None):
+async def build_student_branch_messages(context_window, retrieve_func=None):
     """
-    Handle student branch chat using a context window of recent messages.
-    `context_window` is a list of {"role": ..., "content": ...} dicts,
-    already trimmed to the last N messages by the caller.
+    Build the full message array for a Student Branch query.
+
+    Returns (messages, rag_records) where `messages` is the list of dicts
+    ready for the LLM, and `rag_records` is the list of retrieved member
+    records (needed for source-card logic downstream).
+
+    This separates message construction from LLM invocation so the caller
+    can pass the messages to either call_groq (non-streaming) or
+    call_groq_stream (SSE streaming).
     """
     user_query = ""
     if context_window and isinstance(context_window[-1], dict):
@@ -84,14 +90,28 @@ async def handle_student_branch_chat(context_window, call_groq_func, retrieve_fu
     if retrieve_func is not None and user_query.strip():
         records = await retrieve_func(user_query)
 
-    synthesis_msgs = [
+    messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": _build_retrieval_context(records)},
     ] + context_window
 
+    return messages, records
+
+
+async def handle_student_branch_chat(context_window, call_groq_func, retrieve_func=None):
+    """
+    Handle student branch chat using a context window of recent messages.
+    `context_window` is a list of {"role": ..., "content": ...} dicts,
+    already trimmed to the last N messages by the caller.
+
+    This is the non-streaming fallback path. The streaming path uses
+    build_student_branch_messages() directly.
+    """
+    messages, records = await build_student_branch_messages(context_window, retrieve_func)
+
     # Use the versatile model for general conversation
     synth_res = await call_groq_func(
-        synthesis_msgs,
+        messages,
         temperature=0.7,
         max_tokens=SYNTHESIS_MAX_TOKENS,
     )
@@ -111,3 +131,4 @@ async def handle_student_branch_chat(context_window, call_groq_func, retrieve_fu
         }
 
     return synth_res, records
+
