@@ -24,6 +24,7 @@ import httpx
 
 
 DEFAULT_COLLECTION = "ieee-members"
+DEFAULT_BASIC_INFO_COLLECTION = "ieee-basic-info"
 DEFAULT_TOP_K = 4
 DEFAULT_MIN_SIMILARITY = 0.35
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -165,13 +166,14 @@ _cache_lock = threading.Lock()
 _teams_cache: dict[str, list[dict[str, Any]]] = {}
 _all_members_cache: list[dict[str, Any]] = []
 _all_vectors_cache: list[tuple[dict[str, Any], list[float]]] = []
+_basic_info_cache: dict[str, Any] = {}
 _cache_timestamp: float = 0.0
 CACHE_TTL = 300.0  # 5 minutes
 
 
 def _load_cache_if_needed(force: bool = False):
-    """Load all team docs and member embeddings into RAM."""
-    global _teams_cache, _all_members_cache, _all_vectors_cache, _cache_timestamp
+    """Load all team docs, member embeddings, and basic-info pool into RAM."""
+    global _teams_cache, _all_members_cache, _all_vectors_cache, _basic_info_cache, _cache_timestamp
     import time
     now = time.time()
     if not force and _all_vectors_cache and (now - _cache_timestamp < CACHE_TTL):
@@ -182,6 +184,8 @@ def _load_cache_if_needed(force: bool = False):
             return
         try:
             client = _get_firestore_client()
+            
+            # 1. Fetch members collection
             collection_name = _env("FIREBASE_COLLECTION", DEFAULT_COLLECTION)
             col_ref = client.collection(collection_name)
             
@@ -212,41 +216,110 @@ def _load_cache_if_needed(force: bool = False):
                         except (TypeError, ValueError):
                             pass
 
+            # 2. Fetch basic info collection (2nd database pool: ieee-basic-info)
+            basic_info_col_name = _env("BASIC_INFO_COLLECTION", DEFAULT_BASIC_INFO_COLLECTION)
+            new_basic_info = {}
+            try:
+                info_col_ref = client.collection(basic_info_col_name)
+                for doc in info_col_ref.stream():
+                    new_basic_info[doc.id] = doc.to_dict() or {}
+                if new_basic_info:
+                    print(f"[Student RAG Cache] Successfully connected to 2nd pool '{basic_info_col_name}' ({len(new_basic_info)} docs loaded).")
+            except Exception as info_err:
+                print(f"[Student RAG Cache] Warning: could not load from '{basic_info_col_name}': {info_err}")
+
+            # Fallback to local basic_info.json if basic info collection in Firestore returned empty
+            if not new_basic_info:
+                try:
+                    for search_dir in [
+                        os.path.join(os.path.dirname(__file__), "..", "..", "vector"),
+                        os.path.join(os.path.dirname(__file__), "..", "vector"),
+                        os.path.join(os.getcwd(), "vector"),
+                    ]:
+                        local_path = os.path.join(search_dir, "basic_info.json")
+                        if os.path.exists(local_path):
+                            with open(local_path, "r", encoding="utf-8") as f:
+                                b_data = json.load(f)
+                            teams_arr = b_data.get("team", [])
+                            new_basic_info["teams"] = {"teams": teams_arr, "total_teams": len(teams_arr)}
+                            for t in teams_arr:
+                                t_name = t.get("name", "")
+                                t_slug = re.sub(r'[^a-z0-9]+', '-', t_name.lower()).strip('-')
+                                new_basic_info[t_slug] = {
+                                    "team_name": t_name,
+                                    "description": t.get("answer", ""),
+                                    "answer": t.get("answer", ""),
+                                    "about": t.get("answer", ""),
+                                }
+                            break
+                except Exception:
+                    pass
+
             _teams_cache = new_teams
             _all_members_cache = new_members
             _all_vectors_cache = new_vectors
+            _basic_info_cache = new_basic_info
             _cache_timestamp = now
-            print(f"[Student RAG Cache] Refreshed {len(_all_vectors_cache)} member vectors across {len(_teams_cache)} teams in RAM.")
+            print(f"[Student RAG Cache] Refreshed {len(_all_vectors_cache)} member vectors across {len(_teams_cache)} teams and {len(_basic_info_cache)} basic-info entries in RAM.")
         except Exception as e:
             print(f"[Student RAG Cache] Warning: cache refresh failed ({e}); falling back.")
 
 
 def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
-    """Fetch ALL members of a specific team in 0ms using in-memory cache."""
+    """Fetch ALL members of a specific team alongside its official description from basic-info in 0ms."""
     _load_cache_if_needed()
 
+    overview_records = []
+
     if team_slug == "ALL_TEAMS":
+        # Master teams document from ieee-basic-info
+        teams_doc = _basic_info_cache.get("teams")
+        if teams_doc and "teams" in teams_doc:
+            overview_records.append({
+                "type": "all_teams_overview",
+                "team_name": "IEEE Student Branch AOT Teams",
+                "description": "IEEE Student Branch AOT has 6 specialized teams: Tech Team, PR Team, Design Team, Content Team, Media Team, and Core Team.",
+                "all_teams": teams_doc.get("teams", []),
+                "similarity": 1.0,
+            })
+
+        member_results = []
         if _all_members_cache:
-            return _all_members_cache
-        results = []
-        for members in _teams_cache.values():
-            results.extend(members)
-        return results
+            member_results = _all_members_cache
+        else:
+            for members in _teams_cache.values():
+                member_results.extend(members)
+        return overview_records + member_results
 
-    if team_slug in _teams_cache:
-        return _teams_cache[team_slug]
+    # Specific team requested (e.g. "tech-team", "core-others", etc.)
+    team_info = _basic_info_cache.get(team_slug)
+    if team_info:
+        overview_records.append({
+            "type": "team_overview",
+            "team_name": team_info.get("team_name") or team_slug,
+            "description": team_info.get("description") or team_info.get("answer") or team_info.get("about") or "",
+            "answer": team_info.get("answer") or "",
+            "about": team_info.get("about") or "",
+            "similarity": 1.0,
+        })
 
-    # Fallback to direct Firestore if cache miss
-    client = _get_firestore_client()
-    collection_name = _env("FIREBASE_COLLECTION", DEFAULT_COLLECTION)
-    team_doc_ref = client.collection(collection_name).document(team_slug)
-    team_snap = team_doc_ref.get()
-    if team_snap.exists:
-        team_data = team_snap.to_dict() or {}
-        m_list = team_data.get("members")
-        if m_list and isinstance(m_list, list):
-            return [_member_result(m, similarity=1.0) for m in m_list]
-    return []
+    members = _teams_cache.get(team_slug, [])
+    if not members:
+        # Fallback to direct Firestore if cache miss
+        try:
+            client = _get_firestore_client()
+            collection_name = _env("FIREBASE_COLLECTION", DEFAULT_COLLECTION)
+            team_doc_ref = client.collection(collection_name).document(team_slug)
+            team_snap = team_doc_ref.get()
+            if team_snap.exists:
+                team_data = team_snap.to_dict() or {}
+                m_list = team_data.get("members")
+                if m_list and isinstance(m_list, list):
+                    members = [_member_result(m, similarity=1.0) for m in m_list]
+        except Exception:
+            pass
+
+    return overview_records + members
 
 
 # ── Embedding with persistent HTTP Client ──────────────────────────────
@@ -426,6 +499,40 @@ def _search_firestore(query_vector: list[float]) -> list[dict[str, Any]]:
 
 # ── Public entry point ────────────────────────────────────────────────
 
+_BRANCH_PATTERNS = [
+    r"\b(what\s+is\s+ieee(\s+sb)?(\s+aot)?|about\s+ieee(\s+sb)?(\s+aot)?|ieee\s+student\s+branch\s+aot|academy\s+of\s+technology)\b",
+    r"\b(how\s+(can\s+i|to)\s+(get\s+involved|join|be\s+part\s+of|participate|contribute)|get\s+involved|join\s+ieee)\b",
+]
+
+
+def _detect_branch_query(query: str) -> bool:
+    q = query.lower().strip()
+    return any(re.search(pat, q, re.IGNORECASE) for pat in _BRANCH_PATTERNS)
+
+
+def _fetch_branch_info() -> list[dict[str, Any]]:
+    """Fetch official IEEE Student Branch AOT overview and team list from basic-info in 0ms."""
+    _load_cache_if_needed()
+    teams_doc = _basic_info_cache.get("teams", {})
+    teams_list = teams_doc.get("teams", [])
+
+    return [{
+        "type": "branch_overview",
+        "title": "IEEE Student Branch AOT (Academy of Technology)",
+        "description": (
+            "IEEE Student Branch AOT is the official student branch of IEEE at the Academy of Technology (AOT). "
+            "It is a student-led technical community dedicated to advancing technology, fostering innovation, "
+            "and building engineering leadership through workshops, coding competitions, hackathons, and creative collaborations."
+        ),
+        "how_to_get_involved": (
+            "Students can get involved with IEEE Student Branch AOT by participating in technical workshops, "
+            "competing in hackathons and events, joining annual recruitment drives, or connecting with current team members."
+        ),
+        "all_teams": teams_list,
+        "similarity": 1.0,
+    }]
+
+
 _config_warning_shown = False
 _GREETING_PATTERNS = [
     r"^(hi|hello|hey|hola|good\s*(morning|afternoon|evening)|yo|greetings|howdy)\b",
@@ -437,8 +544,9 @@ async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
 
     Optimized paths:
     1. Greetings → skip retrieval & embedding entirely (0ms).
-    2. Team-listing queries → RAM cache lookup (0ms).
-    3. Member search → Single embedding call + in-memory cosine search (0.2ms).
+    2. Branch overview → basic-info RAM cache lookup (0ms).
+    3. Team-listing queries → basic-info + directory RAM cache lookup (0ms).
+    4. Member search → Single embedding call + in-memory cosine search (0.2ms).
     """
     global _config_warning_shown
     q = query.strip()
@@ -465,14 +573,20 @@ async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
         return []
 
     try:
-        # Fast path 1: Team listing from in-memory cache (0ms, no network)
+        # Fast path 1: Branch overview or get involved questions from ieee-basic-info
+        if _detect_branch_query(q):
+            branch_records = await asyncio.to_thread(_fetch_branch_info)
+            if branch_records:
+                return branch_records
+
+        # Fast path 2: Team listing & descriptions from in-memory cache (0ms, no network)
         team_slug = _detect_team_listing(q)
         if team_slug:
             results = await asyncio.to_thread(_fetch_team_members, team_slug)
             if results:
                 return results
 
-        # Fast path 2: Single embedding call + instant in-memory vector match
+        # Fast path 3: Single embedding call + instant in-memory vector match
         query_vector = await _embed_query(q)
         return await asyncio.to_thread(_search_firestore, query_vector)
     except Exception as exc:
