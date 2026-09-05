@@ -164,6 +164,7 @@ def _detect_team_listing(query: str) -> str | None:
 
 _cache_lock = threading.Lock()
 _teams_cache: dict[str, list[dict[str, Any]]] = {}
+_teams_metadata_cache: dict[str, dict[str, Any]] = {}
 _all_members_cache: list[dict[str, Any]] = []
 _all_vectors_cache: list[tuple[dict[str, Any], list[float]]] = []
 _basic_info_cache: dict[str, Any] = {}
@@ -172,8 +173,8 @@ CACHE_TTL = 300.0  # 5 minutes
 
 
 def _load_cache_if_needed(force: bool = False):
-    """Load all team docs, member embeddings, and basic-info pool into RAM."""
-    global _teams_cache, _all_members_cache, _all_vectors_cache, _basic_info_cache, _cache_timestamp
+    """Load team docs, member embeddings, and basic-info pool into RAM dynamically."""
+    global _teams_cache, _teams_metadata_cache, _all_members_cache, _all_vectors_cache, _basic_info_cache, _cache_timestamp
     import time
     now = time.time()
     if not force and _all_vectors_cache and (now - _cache_timestamp < CACHE_TTL):
@@ -185,11 +186,12 @@ def _load_cache_if_needed(force: bool = False):
         try:
             client = _get_firestore_client()
             
-            # 1. Fetch members collection
+            # 1. Fetch from members collection (extracts members AND parent team descriptions)
             collection_name = _env("FIREBASE_COLLECTION", DEFAULT_COLLECTION)
             col_ref = client.collection(collection_name)
             
             new_teams = {}
+            new_teams_metadata = {}
             new_members = []
             new_vectors = []
 
@@ -201,6 +203,17 @@ def _load_cache_if_needed(force: bool = False):
                 # Format team members
                 formatted_team = [_member_result(m, similarity=1.0) for m in m_list]
                 new_teams[ts] = formatted_team
+
+                # Extract team description, about, and answer directly from ieee-members parent document
+                new_teams_metadata[ts] = {
+                    "team_name": team_data.get("team_name") or ts.replace("-", " ").title(),
+                    "description": team_data.get("description") or team_data.get("answer") or team_data.get("about") or "",
+                    "answer": team_data.get("answer") or "",
+                    "about": team_data.get("about") or "",
+                    "slug": ts,
+                    "total_members": team_data.get("total_members") or len(formatted_team),
+                    "member_names": team_data.get("member_names") or [m.get("name") for m in formatted_team if m.get("name")],
+                }
 
                 # Fetch subcollection for vectors if needed
                 members_col = team_doc.reference.collection("members")
@@ -216,20 +229,35 @@ def _load_cache_if_needed(force: bool = False):
                         except (TypeError, ValueError):
                             pass
 
-            # 2. Fetch basic info collection (2nd database pool: ieee-basic-info)
+            # 2. Fetch basic info collection if configured/present (merges without forcing single source)
             basic_info_col_name = _env("BASIC_INFO_COLLECTION", DEFAULT_BASIC_INFO_COLLECTION)
             new_basic_info = {}
             try:
                 info_col_ref = client.collection(basic_info_col_name)
                 for doc in info_col_ref.stream():
-                    new_basic_info[doc.id] = doc.to_dict() or {}
+                    doc_data = doc.to_dict() or {}
+                    new_basic_info[doc.id] = doc_data
+                    # If this doc provides or enriches a team description, merge it dynamically
+                    if doc.id in new_teams_metadata:
+                        for k in ("description", "answer", "about", "team_name"):
+                            if doc_data.get(k):
+                                new_teams_metadata[doc.id][k] = doc_data[k]
+                    elif doc.id not in ("teams", "branch"):
+                        new_teams_metadata[doc.id] = {
+                            "team_name": doc_data.get("team_name") or doc.id.replace("-", " ").title(),
+                            "description": doc_data.get("description") or doc_data.get("answer") or doc_data.get("about") or "",
+                            "answer": doc_data.get("answer") or "",
+                            "about": doc_data.get("about") or "",
+                            "slug": doc.id,
+                        }
                 if new_basic_info:
-                    print(f"[Student RAG Cache] Successfully connected to 2nd pool '{basic_info_col_name}' ({len(new_basic_info)} docs loaded).")
+                    print(f"[Student RAG Cache] Merged {len(new_basic_info)} document(s) from '{basic_info_col_name}'.")
             except Exception as info_err:
-                print(f"[Student RAG Cache] Warning: could not load from '{basic_info_col_name}': {info_err}")
+                print(f"[Student RAG Cache] Note: '{basic_info_col_name}' pool not available or skipped ({info_err}). Using '{collection_name}' as primary.")
 
-            # Fallback to local basic_info.json if basic info collection in Firestore returned empty
-            if not new_basic_info:
+            # Fallback to local basic_info.json only if no team descriptions were found anywhere
+            has_descriptions = any(bool(t.get("description")) for t in new_teams_metadata.values())
+            if not has_descriptions:
                 try:
                     for search_dir in [
                         os.path.join(os.path.dirname(__file__), "..", "..", "vector"),
@@ -241,47 +269,53 @@ def _load_cache_if_needed(force: bool = False):
                             with open(local_path, "r", encoding="utf-8") as f:
                                 b_data = json.load(f)
                             teams_arr = b_data.get("team", [])
-                            new_basic_info["teams"] = {"teams": teams_arr, "total_teams": len(teams_arr)}
                             for t in teams_arr:
                                 t_name = t.get("name", "")
                                 t_slug = re.sub(r'[^a-z0-9]+', '-', t_name.lower()).strip('-')
-                                new_basic_info[t_slug] = {
-                                    "team_name": t_name,
-                                    "description": t.get("answer", ""),
-                                    "answer": t.get("answer", ""),
-                                    "about": t.get("answer", ""),
-                                }
+                                if t_slug in new_teams_metadata:
+                                    new_teams_metadata[t_slug]["description"] = t.get("answer", "")
+                                    new_teams_metadata[t_slug]["answer"] = t.get("answer", "")
                             break
                 except Exception:
                     pass
 
             _teams_cache = new_teams
+            _teams_metadata_cache = new_teams_metadata
             _all_members_cache = new_members
             _all_vectors_cache = new_vectors
             _basic_info_cache = new_basic_info
             _cache_timestamp = now
-            print(f"[Student RAG Cache] Refreshed {len(_all_vectors_cache)} member vectors across {len(_teams_cache)} teams and {len(_basic_info_cache)} basic-info entries in RAM.")
+            print(f"[Student RAG Cache] Refreshed {len(_all_vectors_cache)} member vectors across {len(_teams_cache)} teams in RAM.")
         except Exception as e:
             print(f"[Student RAG Cache] Warning: cache refresh failed ({e}); falling back.")
 
 
 def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
-    """Fetch ALL members of a specific team alongside its official description from basic-info in 0ms."""
+    """Fetch ALL members of a specific team alongside its official description in 0ms."""
     _load_cache_if_needed()
 
     overview_records = []
 
     if team_slug == "ALL_TEAMS":
-        # Master teams document from ieee-basic-info
-        teams_doc = _basic_info_cache.get("teams")
-        if teams_doc and "teams" in teams_doc:
-            overview_records.append({
-                "type": "all_teams_overview",
-                "team_name": "IEEE Student Branch AOT Teams",
-                "description": "IEEE Student Branch AOT has 6 specialized teams: Tech Team, PR Team, Design Team, Content Team, Media Team, and Core Team.",
-                "all_teams": teams_doc.get("teams", []),
-                "similarity": 1.0,
+        # Dynamic team listing from loaded metadata (no hardcoding)
+        teams_list = []
+        for ts, t_meta in _teams_metadata_cache.items():
+            teams_list.append({
+                "name": t_meta.get("team_name") or ts.replace("-", " ").title(),
+                "slug": ts,
+                "description": t_meta.get("description") or t_meta.get("answer") or t_meta.get("about") or "",
             })
+        if not teams_list and "teams" in _basic_info_cache:
+            teams_list = _basic_info_cache["teams"].get("teams", [])
+
+        team_names_str = ", ".join([t['name'] for t in teams_list if t.get('name')])
+        overview_records.append({
+            "type": "all_teams_overview",
+            "team_name": "IEEE Student Branch AOT Teams",
+            "description": f"IEEE Student Branch AOT includes the following teams: {team_names_str}.",
+            "all_teams": teams_list,
+            "similarity": 1.0,
+        })
 
         member_results = []
         if _all_members_cache:
@@ -291,15 +325,16 @@ def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
                 member_results.extend(members)
         return overview_records + member_results
 
-    # Specific team requested (e.g. "tech-team", "core-others", etc.)
-    team_info = _basic_info_cache.get(team_slug)
+    # Specific team requested: get from _teams_metadata_cache (from ieee-members parent doc) or _basic_info_cache
+    team_info = _teams_metadata_cache.get(team_slug) or _basic_info_cache.get(team_slug)
     if team_info:
+        desc = team_info.get("description") or team_info.get("answer") or team_info.get("about") or ""
         overview_records.append({
             "type": "team_overview",
-            "team_name": team_info.get("team_name") or team_slug,
-            "description": team_info.get("description") or team_info.get("answer") or team_info.get("about") or "",
-            "answer": team_info.get("answer") or "",
-            "about": team_info.get("about") or "",
+            "team_name": team_info.get("team_name") or team_slug.replace("-", " ").title(),
+            "description": desc,
+            "answer": team_info.get("answer") or desc,
+            "about": team_info.get("about") or desc,
             "similarity": 1.0,
         })
 
@@ -511,23 +546,39 @@ def _detect_branch_query(query: str) -> bool:
 
 
 def _fetch_branch_info() -> list[dict[str, Any]]:
-    """Fetch official IEEE Student Branch AOT overview and team list from basic-info in 0ms."""
+    """Fetch official IEEE Student Branch AOT overview and team list dynamically."""
     _load_cache_if_needed()
-    teams_doc = _basic_info_cache.get("teams", {})
-    teams_list = teams_doc.get("teams", [])
+
+    # Dynamic team listing from loaded metadata (from ieee-members / ieee-basic-info)
+    teams_list = [
+        {
+            "name": t_meta.get("team_name") or ts.replace("-", " ").title(),
+            "slug": ts,
+            "description": t_meta.get("description") or t_meta.get("answer") or t_meta.get("about") or "",
+        }
+        for ts, t_meta in _teams_metadata_cache.items()
+    ]
+    if not teams_list and "teams" in _basic_info_cache:
+        teams_list = _basic_info_cache["teams"].get("teams", [])
+
+    # Check if a custom branch document exists in Firestore (ieee-basic-info or ieee-members)
+    branch_doc = _basic_info_cache.get("branch") or _teams_metadata_cache.get("branch") or {}
+
+    title = branch_doc.get("title") or branch_doc.get("name") or "IEEE Student Branch, Academy of Technology (IEEE SB AOT)"
+    description = branch_doc.get("description") or branch_doc.get("about") or (
+        "IEEE Student Branch AOT is the official student branch of IEEE at the Academy of Technology (AOT), "
+        "fostering technological innovation, engineering excellence, and professional growth through hands-on projects, workshops, and events."
+    )
+    how_to_join = branch_doc.get("how_to_get_involved") or branch_doc.get("get_involved") or (
+        "Students can get involved with IEEE Student Branch AOT by participating in technical workshops, "
+        "competing in hackathons and events, joining annual recruitment drives, or connecting with current team members."
+    )
 
     return [{
         "type": "branch_overview",
-        "title": "IEEE Student Branch AOT (Academy of Technology)",
-        "description": (
-            "IEEE Student Branch AOT is the official student branch of IEEE at the Academy of Technology (AOT). "
-            "It is a student-led technical community dedicated to advancing technology, fostering innovation, "
-            "and building engineering leadership through workshops, coding competitions, hackathons, and creative collaborations."
-        ),
-        "how_to_get_involved": (
-            "Students can get involved with IEEE Student Branch AOT by participating in technical workshops, "
-            "competing in hackathons and events, joining annual recruitment drives, or connecting with current team members."
-        ),
+        "title": title,
+        "description": description,
+        "how_to_get_involved": how_to_join,
         "all_teams": teams_list,
         "similarity": 1.0,
     }]
