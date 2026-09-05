@@ -54,7 +54,10 @@ TEAM_PATTERNS: dict[str, list[str]] = {
 }
 
 _ALL_TEAMS_PATTERNS = [
-    r"\b(all\s+teams?|all\s+members?|every\s+member|list\s+(all\s+)?teams?|what\s+teams?|how\s+many\s+teams?|who\s+all\s+are\s+in|entire\s+team|everyone|all\s+committee|whole\s+team)\b"
+    r"\b(all\s+teams?|all\s+members?|every\s+member|list\s+(all\s+)?teams?|what\s+teams?|how\s+many\s+teams?|who\s+all\s+are\s+in|entire\s+team|everyone|all\s+committee|whole\s+team)\b",
+    r"\b(what\s+are\s+(the\s+)?teams?|which\s+teams?|teams?\s+(are\s+there|exist|available)|teams?\s+in\s+ieee|ieee\s+teams?)\b",
+    r"\b(tell\s+me\s+about\s+(the\s+)?teams?|about\s+teams?|who\s+are\s+the\s+teams?|teams?\s+and\s+(their\s+)?members?|list\s+of\s+teams?|teams?\s+overview|different\s+teams?|various\s+teams?)\b",
+    r"^(teams?|our\s+teams?|show\s+teams?|give\s+teams?)$",
 ]
 
 _LISTING_SIGNALS = [
@@ -215,12 +218,14 @@ def _load_cache_if_needed(force: bool = False):
                     "member_names": team_data.get("member_names") or [m.get("name") for m in formatted_team if m.get("name")],
                 }
 
-                # Fetch subcollection for vectors if needed
+                # Fetch subcollection for vectors and complete team roster
                 members_col = team_doc.reference.collection("members")
                 for doc in members_col.stream():
                     d = doc.to_dict() or {}
                     res_m = _member_result(d, similarity=1.0)
                     new_members.append(res_m)
+                    if not any(m.get("name") == res_m.get("name") for m in new_teams[ts]):
+                        new_teams[ts].append(res_m)
                     emb = d.get("embedding")
                     if emb is not None:
                         try:
@@ -228,6 +233,10 @@ def _load_cache_if_needed(force: bool = False):
                             new_vectors.append((d, vec))
                         except (TypeError, ValueError):
                             pass
+
+                if not new_teams_metadata[ts]["member_names"]:
+                    new_teams_metadata[ts]["member_names"] = [m.get("name") for m in new_teams[ts] if m.get("name")]
+                new_teams_metadata[ts]["total_members"] = len(new_teams[ts])
 
             # 2. Fetch basic info collection if configured/present (merges without forcing single source)
             basic_info_col_name = _env("BASIC_INFO_COLLECTION", DEFAULT_BASIC_INFO_COLLECTION)
@@ -290,7 +299,7 @@ def _load_cache_if_needed(force: bool = False):
             print(f"[Student RAG Cache] Warning: cache refresh failed ({e}); falling back.")
 
 
-def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
+def _fetch_team_members(team_slug: str, query: str = "") -> list[dict[str, Any]]:
     """Fetch ALL members of a specific team alongside its official description in 0ms."""
     _load_cache_if_needed()
 
@@ -317,13 +326,17 @@ def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
             "similarity": 1.0,
         })
 
-        member_results = []
-        if _all_members_cache:
-            member_results = _all_members_cache
-        else:
-            for members in _teams_cache.values():
-                member_results.extend(members)
-        return overview_records + member_results
+        # Only provide individual member profiles if the user explicitly asked for members
+        wants_members = any(w in query.lower() for w in ["member", "members", "who all", "everyone", "people", "names", "who is", "roster"])
+        if wants_members:
+            member_results = []
+            if _all_members_cache:
+                member_results = _all_members_cache
+            else:
+                for members in _teams_cache.values():
+                    member_results.extend(members)
+            return overview_records + member_results
+        return overview_records
 
     # Specific team requested: get from _teams_metadata_cache (from ieee-members parent doc) or _basic_info_cache
     team_info = _teams_metadata_cache.get(team_slug) or _basic_info_cache.get(team_slug)
@@ -351,6 +364,10 @@ def _fetch_team_members(team_slug: str) -> list[dict[str, Any]]:
                 m_list = team_data.get("members")
                 if m_list and isinstance(m_list, list):
                     members = [_member_result(m, similarity=1.0) for m in m_list]
+                else:
+                    for doc in team_doc_ref.collection("members").stream():
+                        d = doc.to_dict() or {}
+                        members.append(_member_result(d, similarity=1.0))
         except Exception:
             pass
 
@@ -535,13 +552,17 @@ def _search_firestore(query_vector: list[float]) -> list[dict[str, Any]]:
 # ── Public entry point ────────────────────────────────────────────────
 
 _BRANCH_PATTERNS = [
-    r"\b(what\s+is\s+ieee(\s+sb)?(\s+aot)?|about\s+ieee(\s+sb)?(\s+aot)?|ieee\s+student\s+branch\s+aot|academy\s+of\s+technology)\b",
-    r"\b(how\s+(can\s+i|to)\s+(get\s+involved|join|be\s+part\s+of|participate|contribute)|get\s+involved|join\s+ieee)\b",
+    r"\b(what\s+is\s+ieee(\s+sb)?(\s+aot)?|about\s+ieee(\s+sb)?(\s+aot)?|tell\s+me\s+about\s+ieee(\s+sb)?(\s+aot)?|intro(duction)?\s+to\s+ieee(\s+sb)?(\s+aot)?|overview\s+of\s+ieee(\s+sb)?(\s+aot)?)\b",
+    r"\b(how\s+(can\s+i|to)\s+(get\s+involved|join|be\s+part\s+of|participate|contribute)|get\s+involved|join\s+ieee|membership|how\s+to\s+register)\b",
+    r"^(ieee(\s+sb)?(\s+aot)?|ieee\s+student\s+branch(\s+aot)?|academy\s+of\s+technology)$",
 ]
 
 
 def _detect_branch_query(query: str) -> bool:
     q = query.lower().strip()
+    if any(w in q for w in ["team", "teams", "member", "members", "lead", "leads"]):
+        if not any(w in q for w in ["join", "involved", "participate", "register"]):
+            return False
     return any(re.search(pat, q, re.IGNORECASE) for pat in _BRANCH_PATTERNS)
 
 
@@ -595,8 +616,8 @@ async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
 
     Optimized paths:
     1. Greetings → skip retrieval & embedding entirely (0ms).
-    2. Branch overview → basic-info RAM cache lookup (0ms).
-    3. Team-listing queries → basic-info + directory RAM cache lookup (0ms).
+    2. Team-listing queries → basic-info + directory RAM cache lookup (0ms).
+    3. Branch overview → basic-info RAM cache lookup (0ms).
     4. Member search → Single embedding call + in-memory cosine search (0.2ms).
     """
     global _config_warning_shown
@@ -624,18 +645,18 @@ async def retrieve_student_branch(query: str) -> list[dict[str, Any]]:
         return []
 
     try:
-        # Fast path 1: Branch overview or get involved questions from ieee-basic-info
+        # Fast path 1: Team listing & descriptions from in-memory cache (0ms, no network)
+        team_slug = _detect_team_listing(q)
+        if team_slug:
+            results = await asyncio.to_thread(_fetch_team_members, team_slug, q)
+            if results:
+                return results
+
+        # Fast path 2: Branch overview or get involved questions from ieee-basic-info
         if _detect_branch_query(q):
             branch_records = await asyncio.to_thread(_fetch_branch_info)
             if branch_records:
                 return branch_records
-
-        # Fast path 2: Team listing & descriptions from in-memory cache (0ms, no network)
-        team_slug = _detect_team_listing(q)
-        if team_slug:
-            results = await asyncio.to_thread(_fetch_team_members, team_slug)
-            if results:
-                return results
 
         # Fast path 3: Single embedding call + instant in-memory vector match
         query_vector = await _embed_query(q)
