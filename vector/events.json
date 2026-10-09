@@ -1,0 +1,185 @@
+{
+  "document": {
+    "document_id": "ieee_sb_aot_events_activities",
+    "title": "IEEE SB AOT Events and Activities",
+    "subtitle": "Descriptions of Roots, Integrata, Peter Protocol, and webinars",
+    "organization": "IEEE Student Branch, Academy of Technology (IEEE SB AOT)",
+    "scope": "Student branch events, competitions, hackathons, quizzes, ideathons, and webinar updates",
+    "source_file": "user_provided_event_descriptions",
+    "source_type": "user_provided_text",
+    "language": "en",
+    "metadata_schema_version": "1.0",
+    "preprocessing": {
+      "grammar_normalized": true,
+      "meaning_preserved": true,
+      "chunks_are_event_specific": true,
+      "chunk_count": 4,
+      "note": "Event details were based only on the user's description. Dates, venues, status, and website URL were not supplied. The phrase 'Round 52' is preserved as provided and flagged for confirmation."
+    }
+  },
+  "chunks": [
+    {
+      "chunk_id": "ieee_sb_aot_events_roots_c01",
+      "document_id": "ieee_sb_aot_events_activities",
+      "title": "Roots — DSA Contest",
+      "section_number": 1,
+      "section_title": "Roots",
+      "subsection_titles": [],
+      "content": "Roots is a Data Structures and Algorithms (DSA) contest hosted by IEEE SB AOT. It focuses on DSA-related problem-solving and competition.",
+      "keywords": [
+        "Roots",
+        "DSA",
+        "Data Structures and Algorithms",
+        "coding contest",
+        "programming contest",
+        "problem solving",
+        "algorithmic thinking",
+        "IEEE SB AOT",
+        "student competition"
+      ],
+      "common_queries": [
+        "What is Roots?",
+        "Which DSA contest is hosted by IEEE SB AOT?",
+        "Does IEEE SB AOT organize a coding contest?",
+        "Tell me about the Roots contest."
+      ],
+      "metadata": {
+        "source_file": "user_provided_event_descriptions",
+        "source_type": "user_provided_text",
+        "content_type": "event_description",
+        "organization": "IEEE Student Branch, Academy of Technology (IEEE SB AOT)",
+        "event_name": "Roots",
+        "event_category": "DSA contest",
+        "event_format": "not specified",
+        "status": "not specified",
+        "date": null,
+        "location": null,
+        "source_url": null,
+        "language": "en"
+      }
+    },
+    {
+      "chunk_id": "ieee_sb_aot_events_integrata_c01",
+      "document_id": "ieee_sb_aot_events_activities",
+      "title": "Integrata — Offline Hackathon",
+      "section_number": 2,
+      "section_title": "Integrata",
+      "subsection_titles": [],
+      "content": "Integrata is an offline hackathon organized by IEEE SB AOT.",
+      "keywords": [
+        "Integrata",
+        "offline hackathon",
+        "hackathon",
+        "team project",
+        "innovation",
+        "building solutions",
+        "IEEE SB AOT",
+        "student event"
+      ],
+      "common_queries": [
+        "What is Integrata?",
+        "Which offline hackathon is associated with IEEE SB AOT?",
+        "Does IEEE SB AOT host an offline hackathon?",
+        "Tell me about the Integrata hackathon."
+      ],
+      "metadata": {
+        "source_file": "user_provided_event_descriptions",
+        "source_type": "user_provided_text",
+        "content_type": "event_description",
+        "organization": "IEEE Student Branch, Academy of Technology (IEEE SB AOT)",
+        "event_name": "Integrata",
+        "event_category": "hackathon",
+        "event_format": "offline",
+        "status": "not specified",
+        "date": null,
+        "location": null,
+        "source_url": null,
+        "language": "en"
+      }
+    },
+    {
+      "chunk_id": "ieee_sb_aot_events_peter_protocol_c01",
+      "document_id": "ieee_sb_aot_events_activities",
+      "title": "Peter Protocol — Online Technical and Aptitude Quiz",
+      "section_number": 3,
+      "section_title": "Peter Protocol",
+      "subsection_titles": [
+        "Offline Ideathon for Finalists"
+      ],
+      "content": "Peter Protocol is an online technical and aptitude quiz organized by IEEE SB AOT. The provided description also states that an offline ideathon was held among the finalists in a stage referred to as \"Round 52\". The round label is retained as provided and may need confirmation.",
+      "keywords": [
+        "Peter Protocol",
+        "online quiz",
+        "technical quiz",
+        "aptitude quiz",
+        "online technical assessment",
+        "offline ideathon",
+        "finalists",
+        "Round 52",
+        "IEEE SB AOT",
+        "competition rounds"
+      ],
+      "common_queries": [
+        "What is Peter Protocol?",
+        "Which online technical and aptitude quiz is hosted by IEEE SB AOT?",
+        "Was there an offline ideathon for Peter Protocol finalists?",
+        "What happened to the finalists in Round 52 of Peter Protocol?"
+      ],
+      "metadata": {
+        "source_file": "user_provided_event_descriptions",
+        "source_type": "user_provided_text",
+        "content_type": "event_description",
+        "organization": "IEEE Student Branch, Academy of Technology (IEEE SB AOT)",
+        "event_name": "Peter Protocol",
+        "event_category": "technical and aptitude quiz",
+        "event_format": "online quiz with an offline ideathon for finalists",
+        "finalist_activity": "offline ideathon",
+        "round_label_as_provided": "Round 52",
+        "round_label_needs_confirmation": true,
+        "status": "not specified",
+        "date": null,
+        "location": null,
+        "source_url": null,
+        "language": "en"
+      }
+    },
+    {
+      "chunk_id": "ieee_sb_aot_events_webinars_c01",
+      "document_id": "ieee_sb_aot_events_activities",
+      "title": "IEEE SB AOT — Webinars and Updates",
+      "section_number": 4,
+      "section_title": "Webinars and Updates",
+      "subsection_titles": [],
+      "content": "IEEE SB AOT conducts multiple webinars. Students who want to stay updated about upcoming webinars and other activities should check the official IEEE SB AOT website regularly. The website URL was not included in the provided information.",
+      "keywords": [
+        "webinars",
+        "webinars and sessions",
+        "online sessions",
+        "technical talks",
+        "upcoming events",
+        "event updates",
+        "official website",
+        "IEEE SB AOT",
+        "stay updated",
+        "student activities"
+      ],
+      "common_queries": [
+        "Does IEEE SB AOT organize webinars?",
+        "How can I stay updated about IEEE SB AOT webinars?",
+        "Where should I check for upcoming IEEE SB AOT activities?",
+        "How do I find updates about events hosted by IEEE SB AOT?"
+      ],
+      "metadata": {
+        "source_file": "user_provided_event_descriptions",
+        "source_type": "user_provided_text",
+        "content_type": "ongoing_activities_and_updates",
+        "organization": "IEEE Student Branch, Academy of Technology (IEEE SB AOT)",
+        "activity_type": "webinars",
+        "frequency": "multiple; exact schedule not specified",
+        "recommended_action": "Check the official IEEE SB AOT website regularly",
+        "source_url": null,
+        "language": "en"
+      }
+    }
+  ]
+}
