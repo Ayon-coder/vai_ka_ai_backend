@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from googlesearch import search as gsearch
 
 try:

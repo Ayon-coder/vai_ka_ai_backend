@@ -11,7 +11,7 @@ langchain-groq
 # Search tools
 requests
 beautifulsoup4
-duckduckgo-search
+ddgs
 googlesearch-python
 
 # Firebase
