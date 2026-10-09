@@ -1,4 +1,4 @@
-﻿"""
+"""
 retriever_shared.py
 -------------------
 Shared singleton resources for all FirebaseStudentRetriever instances.
@@ -99,6 +99,7 @@ def _load_from_firestore() -> List[Tuple[Dict[str, Any], str, str]]:
         ("teams_overview", lambda: client.collection("teams_overview").stream()),
         ("team_members_details", lambda: client.collection("team_members_details").stream()),
         ("members", lambda: client.collection_group("members").stream()),
+        ("events", lambda: client.collection("events").stream()),
     ]
 
     for coll_name, fetcher in fetch_plan:
