@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python Virtual Environments
+.env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables
+# Ignore the real .env file but KEEP .env.example
+.env
+!.env.example
+
+# LangChain / AI Cache
+.langchain.db
+
+# VS Code / IDEs
+.vscode/
+.idea/
+
+# Local Vector Caches (if any)
+vector/
+*.sqlite3
+
+# Firebase / GCP Secrets
+*-firebase-adminsdk-*.json
+gcp-credentials.json
+
+# Vercel
+.vercel/

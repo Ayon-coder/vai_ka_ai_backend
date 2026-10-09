@@ -1,0 +1,21 @@
+# Core framework
+fastapi
+python-dotenv
+pydantic
+
+# LangChain
+langchain-core
+langchain-google-genai
+langchain-groq
+
+# Search tools
+requests
+beautifulsoup4
+duckduckgo-search
+googlesearch-python
+
+# Firebase
+firebase-admin
+
+# Performance (optional — pure-Python fallback exists)
+numpy
