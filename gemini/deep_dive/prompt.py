@@ -22,5 +22,5 @@ Rules:
 
 deep_dive_prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
-    ("user", "{question}")
+    ("user", "Chat History:\n{chat_history}\n\nQuestion: {question}")
 ])

@@ -17,12 +17,12 @@ RESPONSE RULES:
 3. For member lists, format them clearly (e.g., bullet points or a numbered list).
 4. For member profiles, include Name, Role, Team, and any other available details.
 5. Keep answers concise, friendly, and accurate.
-6. If the context does not contain the answer, reply EXACTLY:
-   "I don't have enough information about that in the student branch records."
-7. Never invent names, roles, or details not present in the context.
+6. If the user asks a conversational question (e.g. greetings, "what was my last query") or refers to chat history, respond naturally using the chat history.
+7. If the user asks a factual question about the branch and the context does not contain the answer, reply: "I don't have enough information about that in the student branch records."
+8. Never invent names, roles, or details not present in the context.
 """
 
 student_branch_prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
-    ("user", "{question}")
+    ("user", "Chat History:\n{chat_history}\n\nQuestion: {question}")
 ])

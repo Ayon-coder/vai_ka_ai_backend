@@ -79,10 +79,23 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
-async def process_chat(query: str, mode: str):
+def extract_query_and_history(messages):
+    query = messages[-1].get("content", "") if messages else ""
+    history_str = ""
+    if len(messages) > 1:
+        for msg in messages[-6:-1]:
+            role = "User" if msg.get("role") == "user" else "Assistant"
+            history_str += f"{role}: {msg.get('content', '')}\n"
+    if not history_str:
+        history_str = "No previous conversation."
+    return query, history_str
+
+async def process_chat(messages: List[Dict[str, Any]], mode: str):
     """
     Processes the chat asynchronously using LangChain's .ainvoke().
     """
+    query, history_str = extract_query_and_history(messages)
+    
     if _OBVIOUS_GIBBERISH_RE.search(query) or _ABUSIVE_OR_ROLEPLAY_RE.search(query):
         return MODERATION_WARNING_MESSAGE
 
@@ -98,10 +111,10 @@ async def process_chat(query: str, mode: str):
             context_str = "No results found."
             
         chain = get_deep_dive_chain()
-        return await chain.ainvoke({"context": context_str, "question": query})
+        return await chain.ainvoke({"context": context_str, "question": query, "chat_history": history_str})
     else:
         chain = get_student_branch_chain()
-        return await chain.ainvoke(query)
+        return await chain.ainvoke({"question": query, "chat_history": history_str})
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
@@ -113,7 +126,7 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     
     try:
-        response_text = await process_chat(query, request.mode)
+        response_text = await process_chat(request.messages, request.mode)
         return ChatResponse(response=response_text)
     except Exception as e:
         print(f"Error during chain execution: {e}")
@@ -122,7 +135,9 @@ async def chat_endpoint(request: ChatRequest):
             return ChatResponse(response="bohot msg ho raha hein ruk ja bhai")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def chat_stream_generator(query: str, mode: str):
+async def chat_stream_generator(messages: List[Dict[str, Any]], mode: str):
+    query, history_str = extract_query_and_history(messages)
+    
     if _OBVIOUS_GIBBERISH_RE.search(query) or _ABUSIVE_OR_ROLEPLAY_RE.search(query):
         meta = json.dumps({"type": "meta", "sources": [], "is_warning": True})
         yield f"data: {meta}\n\n"
@@ -152,7 +167,7 @@ async def chat_stream_generator(query: str, mode: str):
             yield f"data: {meta}\n\n"
             
             chain = get_deep_dive_chain()
-            async for chunk in chain.astream({"context": context_str, "question": query}):
+            async for chunk in chain.astream({"context": context_str, "question": query, "chat_history": history_str}):
                 data = json.dumps({"type": "chunk", "content": chunk})
                 yield f"data: {data}\n\n"
         else:
@@ -160,7 +175,7 @@ async def chat_stream_generator(query: str, mode: str):
             yield f"data: {meta}\n\n"
             
             chain = get_student_branch_chain()
-            async for chunk in chain.astream(query):
+            async for chunk in chain.astream({"question": query, "chat_history": history_str}):
                 data = json.dumps({"type": "chunk", "content": chunk})
                 yield f"data: {data}\n\n"
         
@@ -187,7 +202,7 @@ async def chat_stream_endpoint(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
         
     return StreamingResponse(
-        chat_stream_generator(query, request.mode),
+        chat_stream_generator(request.messages, request.mode),
         media_type="text/event-stream"
     )
 

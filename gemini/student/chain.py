@@ -59,8 +59,13 @@ def get_student_branch_chain():
         google_api_key=gemini_keys.get_next_key(),
     )
 
+    from operator import itemgetter
     return (
-        {"context": _get_retriever() | _format_docs, "question": RunnablePassthrough()}
+        {
+            "context": itemgetter("question") | _get_retriever() | _format_docs,
+            "question": itemgetter("question"),
+            "chat_history": itemgetter("chat_history")
+        }
         | student_branch_prompt
         | llm
         | StrOutputParser()
