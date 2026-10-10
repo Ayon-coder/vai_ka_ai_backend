@@ -117,6 +117,9 @@ async def chat_endpoint(request: ChatRequest):
         return ChatResponse(response=response_text)
     except Exception as e:
         print(f"Error during chain execution: {e}")
+        err_str = str(e).lower()
+        if "429" in err_str or "too many requests" in err_str or "resourceexhausted" in err_str or "rate limit" in err_str:
+            return ChatResponse(response="bohot msg ho raha hein ruk ja bhai")
         raise HTTPException(status_code=500, detail=str(e))
 
 async def chat_stream_generator(query: str, mode: str):
@@ -164,8 +167,15 @@ async def chat_stream_generator(query: str, mode: str):
         done_data = json.dumps({"type": "done"})
         yield f"data: {done_data}\n\n"
     except Exception as e:
-        err_data = json.dumps({"type": "error", "message": str(e)})
-        yield f"data: {err_data}\n\n"
+        err_str = str(e).lower()
+        if "429" in err_str or "too many requests" in err_str or "resourceexhausted" in err_str or "rate limit" in err_str:
+            data = json.dumps({"type": "chunk", "content": "bohot msg ho raha hein ruk ja bhai"})
+            yield f"data: {data}\n\n"
+            done_data = json.dumps({"type": "done"})
+            yield f"data: {done_data}\n\n"
+        else:
+            err_data = json.dumps({"type": "error", "message": str(e)})
+            yield f"data: {err_data}\n\n"
 
 @app.post("/api/chat/stream")
 async def chat_stream_endpoint(request: ChatRequest):

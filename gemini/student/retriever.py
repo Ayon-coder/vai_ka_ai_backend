@@ -42,7 +42,7 @@ class FirebaseStudentRetriever(BaseRetriever):
     # Kept for API backward-compatibility; actual model is the shared singleton.
     collection_name: str = "ieee-members"
     embeddings: GoogleGenerativeAIEmbeddings
-    top_k: int = 8
+    top_k: int = 15
     min_similarity: float = 0.45
 
     # ------------------------------------------------------------------
@@ -97,7 +97,16 @@ class FirebaseStudentRetriever(BaseRetriever):
                     scored_entries.append((score, data, doc_id, coll))
 
             scored_entries.sort(key=lambda x: x[0], reverse=True)
-            top = scored_entries[: self.top_k]
+            
+            # Deduplicate by doc_id
+            seen_ids = set()
+            top = []
+            for score, data, doc_id, coll in scored_entries:
+                if doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    top.append((score, data, doc_id, coll))
+                    if len(top) == self.top_k:
+                        break
 
             if not top:
                 return [Document(page_content="No matching records found for this query.")]
