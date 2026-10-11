@@ -1,7 +1,7 @@
 """
 retriever.py  (gemini/student)
 ------------------------------
-LangChain BaseRetriever that queries the three IEEE Student Branch Firestore
+LangChain BaseRetriever that queries the IEEE Student Branch Firestore
 collections and returns the most semantically relevant documents.
 
 Key improvements:
@@ -11,17 +11,21 @@ Key improvements:
 - _aget_relevant_documents override so LangChain async chains use the async
   path directly (no thread-pool detour for .ainvoke / .astream).
 - Deduplication by doc_id: keeps only the highest-scoring version of a doc
-  when the same ID appears in multiple collections (e.g. tech-team in both
-  teams_overview and team_members_details).
+  when the same ID appears in multiple collections.
 - min_similarity raised 0.35 -> 0.45 to reduce noise.
 - top_k raised 4 -> 5 for slightly richer context.
 - numpy batch cosine scoring via retriever_shared (3.6ms for 65 docs).
+- Upcoming-event intent detection: when the user asks about upcoming/future
+  events, results are filtered to only docs where upcoming_query_eligible=True.
+- Event temporal status (past/upcoming/ongoing) is appended to the formatted
+  record so the LLM can correctly label events in its answer.
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import re
 from typing import Any, Dict, List
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
@@ -34,6 +38,26 @@ from retriever_shared import (
     embed_query_async,
     get_cached_docs_async,
 )
+
+# ---------------------------------------------------------------------------
+# Upcoming-event query detector
+# ---------------------------------------------------------------------------
+
+_UPCOMING_PATTERNS = re.compile(
+    r"\b("
+    r"upcoming|future|next|scheduled|coming soon|announced|new event"
+    r"|what.*event.*next"
+    r"|any.*event.*coming"
+    r"|events.*happen.*soon"
+    r"|when.*next.*event"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_upcoming_query(query: str) -> bool:
+    """Return True when the query is asking about upcoming / future events."""
+    return bool(_UPCOMING_PATTERNS.search(query))
 
 
 class FirebaseStudentRetriever(BaseRetriever):
@@ -97,7 +121,7 @@ class FirebaseStudentRetriever(BaseRetriever):
                     scored_entries.append((score, data, doc_id, coll))
 
             scored_entries.sort(key=lambda x: x[0], reverse=True)
-            
+
             # Deduplicate by doc_id
             seen_ids = set()
             top = []
@@ -107,6 +131,22 @@ class FirebaseStudentRetriever(BaseRetriever):
                     top.append((score, data, doc_id, coll))
                     if len(top) == self.top_k:
                         break
+
+            # ------------------------------------------------------------------
+            # Upcoming-event intent filter
+            # When the user explicitly asks about upcoming/future events, keep
+            # only event documents that are marked as upcoming_query_eligible.
+            # ------------------------------------------------------------------
+            if _is_upcoming_query(query):
+                filtered = [
+                    (score, data, doc_id, coll)
+                    for score, data, doc_id, coll in top
+                    if data.get("metadata", {}).get("upcoming_query_eligible") is True
+                    or data.get("upcoming_query_eligible") is True
+                ]
+                # Fall back to all top results if nothing is upcoming,
+                # so the LLM can tell the user there are no upcoming events.
+                top = filtered or top
 
             if not top:
                 return [Document(page_content="No matching records found for this query.")]
@@ -142,7 +182,22 @@ class FirebaseStudentRetriever(BaseRetriever):
             header = f"[{title}]" if title else ""
             if sec and sec != title:
                 header += f" (Section: {sec})"
-            return f"{header}\n{content}".strip()
+            result = f"{header}\n{content}".strip()
+
+            # Append event temporal status if present (events collection)
+            meta = data.get("metadata", {})
+            temporal_status = meta.get("event_temporal_status")
+            if temporal_status:
+                start = meta.get("event_start_date") or meta.get("exact_start_date")
+                end   = meta.get("event_end_date")   or meta.get("exact_end_date")
+                date_text = meta.get("date_text") or meta.get("date", "")
+                date_info = date_text or (f"{start} to {end}" if start and end != start else start) or ""
+                status_line = f"\n\n[Event Status: {temporal_status.upper()}"
+                if date_info:
+                    status_line += f" | Date: {date_info}"
+                status_line += "]"
+                result += status_line
+            return result
 
         # 2. Team overview (description / common_queries present)
         if "description" in data or "common_queries" in data:
